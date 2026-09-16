@@ -11,12 +11,15 @@
 #  Drivetrain : PORT11/12 left (reversed), PORT13/14 right
 #  Lift (DR4B): PORT10 left, PORT9 right (reversed)
 #               green cartridge, 1:1, mirrored gear train
+#  Intake     : PORT5 intake, PORT6 conveyor (spin together)
 #
 #  Controls:
 #    Left stick vertical  (axis3) - throttle
 #    Right stick horiz.   (axis1) - steering
 #    L1 - lift up
 #    L2 - lift down
+#    R1 - intake in
+#    R2 - intake out (unjam / eject)
 #    B + DOWN - re-home the lift
 #    B + UP   - lift motor direction diagnostic
 # ============================================================
@@ -40,6 +43,17 @@ lift_left  = Motor(Ports.PORT10, GearSetting.RATIO_18_1, False)
 lift_right = Motor(Ports.PORT9,  GearSetting.RATIO_18_1, True)
 lift = MotorGroup(lift_left, lift_right)
 
+# intake motors
+# Ports 5/6 follow the earlier auton code (9-14 are drive + lift).
+# Both motors always spin together so a ball is carried straight
+# through. If one of them pulls the wrong way, flip ITS reverse
+# flag here -- do not swap the buttons. If the robot only has one
+# intake motor, delete the conveyor line and take it out of the
+# group.
+intake_motor   = Motor(Ports.PORT5, GearSetting.RATIO_18_1, False)
+conveyor_motor = Motor(Ports.PORT6, GearSetting.RATIO_18_1, False)
+intake = MotorGroup(intake_motor, conveyor_motor)
+
 
 # ============================================================
 #  TUNING CONSTANTS
@@ -48,6 +62,13 @@ lift = MotorGroup(lift_left, lift_right)
 # ---- Drivetrain ----
 DEADBAND  = 5       # ignore joystick noise below this percent
 TURN_GAIN = 1.0     # raise toward 1.5 for sharper turning
+
+# ---- Intake ----
+INTAKE_IN_PCT  = 100    # R1: pull balls in
+INTAKE_OUT_PCT = 100    # R2: push them back out, clears jams
+# BRAKE keeps a half-loaded ball from rolling back out when the
+# driver lets go. Use COAST if the intake motors run hot.
+INTAKE_STOPPING = BRAKE
 
 # ---- Lift: protection ----
 # Torque cap limits current so the motors can't sit at stall
@@ -472,6 +493,22 @@ def lift_control():
 
 
 # ============================================================
+#  INTAKE CONTROL  -- called every loop
+#
+#  Hold-to-run. R1 pulls in, R2 pushes out, release stops. If
+#  both are held, in wins -- R1 is the button the driver is
+#  most likely leaning on during a pickup.
+# ============================================================
+def intake_control():
+    if controller.buttonR1.pressing():
+        intake.spin(FORWARD, INTAKE_IN_PCT, PERCENT)
+    elif controller.buttonR2.pressing():
+        intake.spin(REVERSE, INTAKE_OUT_PCT, PERCENT)
+    else:
+        intake.stop()
+
+
+# ============================================================
 #  DRIVE CONTROL  -- called every loop
 # ============================================================
 def drive_control():
@@ -629,10 +666,13 @@ def user_control():
 
     left_drive.set_stopping(BRAKE)
     right_drive.set_stopping(BRAKE)
+    intake.set_stopping(INTAKE_STOPPING)
+    intake.stop()
 
     while True:
         drive_control()
         lift_control()
+        intake_control()
         wait(20, MSEC)   # MUST stay inside the loop
 
 
