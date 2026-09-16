@@ -5,15 +5,20 @@
 #  Drivetrain : PORT11/12 left, PORT13/14 right
 #  Lift (DR4B): PORT10 left, PORT9 right
 #               green cartridge, 1:1, mirrored gear train
-#  Intake     : PORT5 intake, PORT6 conveyor (spin together)
+#  Intake     : PORT5 / PORT6 rollers (one cup at a time)
+#
+#  Game: VEX V5RC Override (2026-27). Rule <SG6>: a robot may
+#  possess at most ONE Cup and ONE Pin at a time. The intake
+#  therefore grabs a single cup and holds it -- it is not a
+#  hopper. Cups and pins are scored by stacking them on Goals.
 #
 #  Controls:
 #    Left stick vertical  (axis3) - throttle
 #    Right stick horiz.   (axis1) - steering
 #    L1 - lift up
 #    L2 - lift down
-#    R1 - intake in
-#    R2 - intake out (unjam / eject)
+#    R1 - grab a cup (stops itself once the cup is seated)
+#    R2 - place / release the cup (hold to run)
 #    B + DOWN - re-home the lift
 # ============================================================
 
@@ -36,16 +41,18 @@ lift_left  = Motor(Ports.PORT10, GearSetting.RATIO_18_1, False)
 lift_right = Motor(Ports.PORT9,  GearSetting.RATIO_18_1, True)
 lift = MotorGroup(lift_left, lift_right)
 
-# intake motors
-# Ports 5/6 follow the earlier auton code (9-14 are drive + lift).
-# Both motors always spin together so a ball is carried straight
-# through. If one of them pulls the wrong way, flip ITS reverse
-# flag here -- do not swap the buttons. If the robot only has one
-# intake motor, delete the conveyor line and take it out of the
-# group.
-intake_motor   = Motor(Ports.PORT5, GearSetting.RATIO_18_1, False)
-conveyor_motor = Motor(Ports.PORT6, GearSetting.RATIO_18_1, False)
-intake = MotorGroup(intake_motor, conveyor_motor)
+# intake rollers
+# Same two motors and ports as the Push Back intake (5/6; 9-14
+# are drive + lift), re-purposed: both act as grip rollers that
+# pull ONE cup in against a hard stop and pinch it there. The
+# old conveyor-to-hopper role is gone -- <SG6> forbids holding
+# more than one cup. If one roller pulls the wrong way, flip ITS
+# reverse flag here -- do not swap the buttons. If the robot has
+# only one intake motor, delete the second line and take it out
+# of the group.
+intake_a = Motor(Ports.PORT5, GearSetting.RATIO_18_1, False)
+intake_b = Motor(Ports.PORT6, GearSetting.RATIO_18_1, False)
+intake = MotorGroup(intake_a, intake_b)
 
 
 # ============================================================
@@ -56,12 +63,20 @@ intake = MotorGroup(intake_motor, conveyor_motor)
 DEADBAND  = 5       # ignore joystick noise below this percent
 TURN_GAIN = 1.0     # raise toward 1.5 for sharper turning
 
-# ---- Intake ----
-INTAKE_IN_PCT  = 100    # R1: pull balls in
-INTAKE_OUT_PCT = 100    # R2: push them back out, clears jams
-# BRAKE keeps a half-loaded ball from rolling back out when the
-# driver lets go. Use COAST if the intake motors run hot.
-INTAKE_STOPPING = BRAKE
+# ---- Intake (Override: one cup, grab and hold) ----
+INTAKE_IN_PCT  = 100    # R1: pull the cup in
+INTAKE_OUT_PCT = 60     # R2: push it out onto the goal. Gentle,
+                        # so the stack under it is not knocked over
+# The rollers stall ON PURPOSE when the cup hits the hard stop.
+# Cap torque so they can sit there without cooking; if the cup
+# slips out of the grip, raise this before touching anything
+# else.
+INTAKE_MAX_TORQUE_PCT = 60
+# Cup-seated detection: rollers under power but not turning.
+# Once detected the rollers stop in HOLD and pinch the cup.
+INTAKE_STALL_VEL_RPM = 5
+INTAKE_STALL_MS      = 200   # this long at ~zero speed = seated
+INTAKE_ARM_MS        = 150   # ignore the first bit of spin-up
 
 # ---- Lift: protection ----
 # Torque cap limits current so the motors can't sit at stall
@@ -147,6 +162,10 @@ stall_timer  = 0        # ms spent stalled
 thermal_lock = False    # True = lift disabled, too hot
 is_homed     = False    # has the lift found its bottom yet
 screen_timer = 0        # ms since last screen update
+intake_run_ms   = 0     # ms R1 has been held this grab
+intake_stall_ms = 0     # ms the rollers have been stalled
+intake_seated   = False # True = a cup is pinched in the intake
+intake_grabbed  = False # this R1 press already finished its grab
 
 
 def clamp(v, lo, hi):
@@ -398,17 +417,66 @@ def lift_control():
 # ============================================================
 #  INTAKE CONTROL  -- called every loop
 #
-#  Hold-to-run. R1 pulls in, R2 pushes out, release stops. If
-#  both are held, in wins -- R1 is the button the driver is
-#  most likely leaning on during a pickup.
+#  Override (<SG6>): one cup at a time, so this is a grabber,
+#  not a conveyor.
+#
+#  R1 held  : rollers pull in until the cup seats against the
+#             hard stop and the rollers stall. Then they stop in
+#             HOLD and pinch the cup. Keeping R1 held after that
+#             does nothing, so the motors are never left grinding.
+#  R2 held  : rollers run backwards at placing speed to set the
+#             cup down on a goal / stack (or eject it). Release
+#             to stop.
+#  Nothing  : rollers hold position, so a seated cup stays put
+#             while driving.
+#  Both held: R2 wins -- getting rid of a cup is what matters
+#             when you are about to be called for <SG6>.
 # ============================================================
 def intake_control():
-    if controller.buttonR1.pressing():
-        intake.spin(FORWARD, INTAKE_IN_PCT, PERCENT)
-    elif controller.buttonR2.pressing():
+    global intake_run_ms, intake_stall_ms, intake_seated, intake_grabbed
+
+    if controller.buttonR2.pressing():
         intake.spin(REVERSE, INTAKE_OUT_PCT, PERCENT)
-    else:
+        intake_run_ms   = 0
+        intake_stall_ms = 0
+        intake_grabbed  = False
+        if intake_seated:
+            intake_seated = False
+            controller.screen.set_cursor(2, 1)
+            controller.screen.print("                  ")
+        return
+
+    if not controller.buttonR1.pressing():
+        # Released: hold whatever we have. Also re-arms the grab,
+        # so if the cup got knocked loose the next R1 press
+        # re-grips it (it just re-stalls and stops again).
         intake.stop()
+        intake_run_ms   = 0
+        intake_stall_ms = 0
+        intake_grabbed  = False
+        return
+
+    # --- R1 held: grabbing ---
+    if intake_grabbed:
+        intake.stop()          # this press already seated it, don't grind
+        return
+
+    intake.spin(FORWARD, INTAKE_IN_PCT, PERCENT)
+    intake_run_ms += 20
+    if intake_run_ms < INTAKE_ARM_MS:
+        return                 # still spinning up, not a stall
+
+    if abs(intake.velocity(RPM)) < INTAKE_STALL_VEL_RPM:
+        intake_stall_ms += 20
+    else:
+        intake_stall_ms = 0
+
+    if intake_stall_ms >= INTAKE_STALL_MS:
+        intake_grabbed = True
+        intake_seated  = True
+        intake.stop()          # HOLD: pinch the cup
+        controller.screen.set_cursor(2, 1)
+        controller.screen.print("CUP SEATED        ")
 
 
 # ============================================================
@@ -449,7 +517,8 @@ def user_control():
 
     left_drive.set_stopping(BRAKE)
     right_drive.set_stopping(BRAKE)
-    intake.set_stopping(INTAKE_STOPPING)
+    intake.set_stopping(HOLD)              # pinch the cup when stopped
+    intake.set_max_torque(INTAKE_MAX_TORQUE_PCT, PERCENT)
     intake.stop()
 
     while True:
