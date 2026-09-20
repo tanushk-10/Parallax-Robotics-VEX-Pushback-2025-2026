@@ -5,21 +5,20 @@
 #  Drivetrain : PORT11/12 left, PORT13/14 right
 #  Lift (DR4B): PORT10 left, PORT9 right
 #               green cartridge, 1:1, mirrored gear train
-#  Intake     : PORT5 / PORT6 rollers (one cup at a time)
-#
-#  Game: VEX V5RC Override (2026-27). Rule <SG6>: a robot may
-#  possess at most ONE Cup and ONE Pin at a time. The intake
-#  therefore grabs a single cup and holds it -- it is not a
-#  hopper. Cups and pins are scored by stacking them on Goals.
+#  Intake     : PORT7, one motor drives intake + conveyor
+#               (last season's driver control, unchanged)
+#  Claw       : pneumatic solenoid, three-wire port A
 #
 #  Controls:
 #    Left stick vertical  (axis3) - throttle
 #    Right stick horiz.   (axis1) - steering
 #    L1 - lift up
 #    L2 - lift down
-#    R1 - grab a cup (stops itself once the cup is seated)
-#    R2 - place / release the cup (hold to run)
+#    R1 - intake + conveyor in
+#    R2 - intake + conveyor out
+#    A  - claw toggle (pneumatic)
 #    B + DOWN - re-home the lift
+#    B + UP   - lift motor direction diagnostic
 # ============================================================
 
 from vex import *
@@ -37,22 +36,24 @@ right_motor_b = Motor(Ports.PORT14, GearSetting.RATIO_18_1, False)
 right_drive = MotorGroup(right_motor_a, right_motor_b)
 
 # lift motors
-lift_left  = Motor(Ports.PORT10, GearSetting.RATIO_18_1, False)
-lift_right = Motor(Ports.PORT9,  GearSetting.RATIO_18_1, True)
+# LIFT_CARTRIDGE: green (18:1) is what is on the robot now. Red
+# cartridges (GearSetting.RATIO_36_1) give DOUBLE the lifting
+# torque for half the speed. If the lift still stalls after this
+# code change, that swap is the cheapest real fix: change the
+# cartridges, change this one line, nothing else moves.
+LIFT_CARTRIDGE = GearSetting.RATIO_18_1
+lift_left  = Motor(Ports.PORT10, LIFT_CARTRIDGE, False)
+lift_right = Motor(Ports.PORT9,  LIFT_CARTRIDGE, True)
 lift = MotorGroup(lift_left, lift_right)
 
-# intake rollers
-# Same two motors and ports as the Push Back intake (5/6; 9-14
-# are drive + lift), re-purposed: both act as grip rollers that
-# pull ONE cup in against a hard stop and pinch it there. The
-# old conveyor-to-hopper role is gone -- <SG6> forbids holding
-# more than one cup. If one roller pulls the wrong way, flip ITS
-# reverse flag here -- do not swap the buttons. If the robot has
-# only one intake motor, delete the second line and take it out
-# of the group.
-intake_a = Motor(Ports.PORT5, GearSetting.RATIO_18_1, False)
-intake_b = Motor(Ports.PORT6, GearSetting.RATIO_18_1, False)
-intake = MotorGroup(intake_a, intake_b)
+# intake + conveyor
+# Exactly as in last season's driver control file: one motor on
+# PORT7, green cartridge, not reversed.
+intake_conveyor = Motor(Ports.PORT7, GearSetting.RATIO_18_1, False)
+
+# claw (pneumatic)
+# Solenoid driver cable in three-wire port A on the brain.
+claw = DigitalOut(brain.three_wire_port.a)
 
 
 # ============================================================
@@ -63,54 +64,57 @@ intake = MotorGroup(intake_a, intake_b)
 DEADBAND  = 5       # ignore joystick noise below this percent
 TURN_GAIN = 1.0     # raise toward 1.5 for sharper turning
 
-# ---- Intake (Override: one cup, grab and hold) ----
-INTAKE_IN_PCT  = 100    # R1: pull the cup in
-INTAKE_OUT_PCT = 60     # R2: push it out onto the goal. Gentle,
-                        # so the stack under it is not knocked over
-# The rollers stall ON PURPOSE when the cup hits the hard stop.
-# Cap torque so they can sit there without cooking; if the cup
-# slips out of the grip, raise this before touching anything
-# else.
-INTAKE_MAX_TORQUE_PCT = 60
-# Cup-seated detection: rollers under power but not turning.
-# Once detected the rollers stop in HOLD and pinch the cup.
-INTAKE_STALL_VEL_RPM = 5
-INTAKE_STALL_MS      = 200   # this long at ~zero speed = seated
-INTAKE_ARM_MS        = 150   # ignore the first bit of spin-up
+# ---- Intake ----
+MECH_SPEED = 100        # R1 in / R2 out, same as last season
+
+# ---- Claw (pneumatic) ----
+# State of the solenoid when the program starts. Whether "on"
+# means open or closed depends on how the cylinder is plumbed;
+# if the claw starts the wrong way round, flip this.
+CLAW_START_ON = False
 
 # ---- Lift: protection ----
-# Torque cap limits current so the motors can't sit at stall
-# current. At 1:1 a banded DR4B needs everything the motors
-# have just to break loose from rest, so this is uncapped and
-# the thermal guard plus stall timer do the protecting instead.
-# If the motors run hot in normal use, the answer is more
-# rubber band, not a lower number here.
+# Full torque. At 1:1 a DR4B needs everything the motors have.
+# If the motors run hot in normal use, the answer is more rubber
+# band (or red cartridges), not a lower number here.
 MAX_TORQUE_PCT = 100
 
-# ---- Lift: soft limits (motor degrees; at 1:1 = arm degrees)
-# MIN must be at or below the homed zero, or the down button is
-# dead everywhere below it.
-LIFT_MIN_DEG = -5       # tolerance below the homed zero
-LIFT_MAX_DEG = 135      # <-- MEASURE AND REPLACE (see bottom)
+# ---- Lift: upper soft limit (motor degrees; at 1:1 = arm degrees)
+# OFF until someone measures it. 135 was a placeholder guess, and
+# a wrong guess here stops the lift early, which looks exactly
+# like a lift that "won't go all the way up". With it off, the
+# top of travel is protected by the stall guard instead.
+# Measure it (CALIBRATION, bottom of file), then set True.
+USE_MAX_LIMIT = False
+LIFT_MAX_DEG  = 135     # only used when USE_MAX_LIMIT is True
+# There is NO lower soft limit. The old one trusted the homed
+# zero; if homing ever zeroed the lift too high (bands holding
+# the arm up, someone's hand in the way), the down button went
+# dead below that point. Down is now always allowed and the
+# down-stall check stops it pushing into the bottom stop.
 
-# ---- Lift: speeds ----
-UP_PCT   = 100          # effectively capped by MAX_TORQUE_PCT
-DOWN_PCT = 40           # gravity helps; don't slam the bottom
+# ---- Lift: drive ----
+# UP is driven by VOLTAGE, not velocity. 12 V is every bit of
+# thrust a V5 motor has, with no speed controller in between
+# deciding to give less. DOWN stays on velocity control so the
+# motors actively brake the descent instead of letting it fall.
+UP_VOLTS = 12.0
+DOWN_PCT = 40                 # gravity helps; don't slam the bottom
+SLEW_VOLTS_PER_LOOP = 3.0     # 0 -> 12 V in 80 ms, softens the spike
 
 # ---- Lift: position hold ----
-# The lift holds whatever height you release it at, by driving
-# back to a remembered setpoint. This is what makes it stay
-# level with nobody touching it -- a fixed trim percentage
-# cannot do that, because the power needed to hold changes
-# with arm angle and band tension.
-HOLD_KP        = 1.4    # percent power per degree of sag
-HOLD_KD        = 6.0    # damping; raise if it oscillates
-HOLD_MAX_PCT = 85     # ceiling on hold effort
-HOLD_DEADBAND_DEG = 1.5 # don't fight sensor noise
-HOLD_THRESHOLD_DEG = 15 # below this, rest on the stop instead
-
-# ---- Lift: smoothing ----
-SLEW_PER_LOOP = 12      # max percent change per 20 ms loop
+# Whenever no button is pressed, each motor servos to the exact
+# position it was released at, using the motor's own position
+# controller with full current available. The only time the lift
+# is NOT held is when the code knows it is sitting on its bottom
+# stop (just homed, or it just ran down into the stop).
+# The previous version only held above 15 degrees and used BRAKE
+# below that and after every stall. At 1:1 BRAKE is close to
+# free-fall -- that was the "goes up a little, then slams down".
+HOLD_SPEED_PCT = 100          # speed allowed while correcting sag
+# True = hold switched off so the arm can be moved by hand while
+# measuring LIFT_MAX_DEG. The arm will NOT stay up. Bench only.
+CALIBRATING = False
 
 # ---- Lift: thermal guard (Celsius) ----
 # DISABLED at driver request while chasing a no-move problem.
@@ -118,26 +122,26 @@ SLEW_PER_LOOP = 12      # max percent change per 20 ms loop
 # firmware still derates the motors on its own near 55C, so
 # with this off you get no warning before that happens -- the
 # lift just quietly goes weak. Temperature is still shown on
-# the controller screen; watch it.
+# the controller screen; watch it. A lift that has been stalled
+# a few times in a row IS hot: let it cool before judging power.
 THERMAL_GUARD = False
 TEMP_CUTOFF_C = 50      # V5 motors self-limit near 55C
 TEMP_RESUME_C = 45
 
 # ---- Lift: stall detection ----
-# Only armed while the driver is actually holding a button AND
-# real power is already applied, so the slew ramp can't be
-# mistaken for a stall.
-# Left ON. This is the guard most likely to look like "the
-# lift won't move" -- it gives up after half a second of no
-# motion. To rule it out, set False for ONE brief test only,
-# then put it back. With it off, a jammed lift will happily
-# cook both motors.
-STALL_GUARD   = True
-STALL_VEL_RPM = 2
-STALL_MS      = 1200
-# Must stay below DOWN_PCT, or a jam while lowering is never
-# detected -- the command never exceeds the threshold.
-STALL_ARM_PCT = 30
+# A stall never drops the arm. Going UP, the lift HOLDS where it
+# stalled, the controller shows STALL, and the driver lets go and
+# presses again to retry. Each press gets STALL_MS of full push.
+# Set STALL_GUARD False to remove that limit entirely -- the lift
+# will then push for as long as L1 is held, and a jammed lift will
+# cook both motors in well under a minute.
+# Going DOWN, the check is always on: it is how the code knows
+# the arm has reached the bottom stop.
+STALL_GUARD     = True
+STALL_VEL_RPM   = 2
+STALL_MS        = 1200  # going up
+STALL_DOWN_MS   = 300   # going down: that is just the bottom stop
+STALL_ARM_VOLTS = 6.0   # don't judge a stall during the ramp
 
 # ---- Lift: homing ----
 HOMING_PCT        = 25    # gentle downward power while homing
@@ -155,17 +159,16 @@ SCREEN_UPDATE_MS = 250
 # ============================================================
 #  STATE
 # ============================================================
-lift_cmd     = 0.0      # command actually being applied
-hold_target  = 0.0      # height the lift is trying to keep (deg)
-hold_prev_err = 0.0     # previous hold error, for damping
+lift_volts   = 0.0      # upward voltage actually being applied
+lift_mode    = ""       # REST / UP / DOWN / HOLD / COOL, as last commanded
 stall_timer  = 0        # ms spent stalled
+stall_lock   = False    # stalled: hold until the driver lets go
 thermal_lock = False    # True = lift disabled, too hot
 is_homed     = False    # has the lift found its bottom yet
 screen_timer = 0        # ms since last screen update
-intake_run_ms   = 0     # ms R1 has been held this grab
-intake_stall_ms = 0     # ms the rollers have been stalled
-intake_seated   = False # True = a cup is pinched in the intake
-intake_grabbed  = False # this R1 press already finished its grab
+on_stop      = False    # True = arm is known to be on its bottom stop
+claw_on       = False   # current solenoid state
+claw_btn_prev = False   # button A last loop, for press detection
 
 
 def clamp(v, lo, hi):
@@ -185,8 +188,8 @@ def clamp(v, lo, hi):
 #  remember to rest it down before running the program.
 # ============================================================
 def lift_home():
-    global lift_cmd, hold_target, hold_prev_err
-    global stall_timer, thermal_lock, is_homed
+    global lift_volts, lift_mode, stall_timer, stall_lock
+    global thermal_lock, is_homed, on_stop
 
     lift.set_stopping(BRAKE)
     lift.set_max_torque(HOMING_TORQUE_PCT, PERCENT)
@@ -202,8 +205,8 @@ def lift_home():
         wait(20, MSEC)
         elapsed += 20
 
-        # Give it a moment to start moving before judging it as being 
-        # stopped, or it "finds" the bottom instantly by uitself
+        # Give it a moment to start moving before judging it as
+        # stopped, or it "finds" the bottom instantly by itself.
         if elapsed < HOMING_GRACE_MS:
             continue
 
@@ -215,72 +218,112 @@ def lift_home():
             settled = 0
 
     lift.stop()
-    lift.set_position(0, DEGREES)
-
+    # Zero BOTH motors, not just the group's first one: the hold
+    # uses each motor's own encoder.
+    lift_left.set_position(0, DEGREES)
+    lift_right.set_position(0, DEGREES)
 
     lift.set_max_torque(MAX_TORQUE_PCT, PERCENT)
-    lift_cmd      = 0.0
-    hold_target   = 0.0
-    hold_prev_err = 0.0
-    stall_timer   = 0
-    thermal_lock  = False
-    is_homed      = True
+    lift_volts   = 0.0
+    lift_mode    = ""       # force the next loop to re-command
+    stall_timer  = 0
+    stall_lock   = False
+    thermal_lock = False
+    is_homed     = True
+    on_stop      = True     # homing ends on the stop
 
     controller.screen.set_cursor(1, 1)
     controller.screen.print("LIFT READY        ")
 
 
 # ============================================================
-#  LIFT DIAGNOSTIC  -- hold B + UP
+#  LIFT DIAGNOSTIC  -- hold B + UP   (start with the lift DOWN)
 #
-#  Spins each lift motor ALONE at low power and reports the
-#  direction each one actually turns. On a mirrored gear train
-#  both must read the SAME SIGN here -- that is the whole point
-#  of the reverse flag on lift_right.
+#  Answers one question: are the two lift motors helping each
+#  other or fighting? Fighting motors feel EXACTLY like "not
+#  enough thrust": net torque near zero, both at stall current.
 #
-#  Opposite signs = the motors are fighting each other. Net
-#  torque is near zero and both draw stall current, which feels
-#  exactly like "the lift is underpowered." Fix it by flipping
-#  ONE of the booleans at the top of this file, not by raising
-#  torque.
+#  How: power ONE motor while the other coasts, and read the
+#  speed of the one that is NOT powered. It is being dragged
+#  along through the gear train, so its reading shows which way
+#  the mechanism really turned.
+#    passive reads the same sign as the driven one -> they agree
+#    passive reads the opposite sign                -> FIGHTING
+#  (The old test read each motor's own speed while driving it.
+#  A motor always calls its own forward "positive", so that test
+#  said OK no matter what.)
+#
+#  Verdicts:
+#    OK same dir    - wiring/reverse flags are right. The problem
+#                     is torque: bands, gearing, cartridges.
+#    FIGHTING       - flip ONE lift reverse flag at the top.
+#    NO MOVE        - one motor alone can't budge the lift, so the
+#                     test can't tell. Take the load off (lift the
+#                     arm by hand a little) and run it again.
+#    NOT LINKED     - one side moved, the other read nothing:
+#                     loose shaft, stripped gear, bad cable.
 # ============================================================
 def lift_diagnostic():
+    global lift_volts, lift_mode, stall_timer, stall_lock
+
     lift.stop()
-    lift.set_max_torque(40, PERCENT)
+    lift.set_max_torque(100, PERCENT)
 
     controller.screen.clear_screen()
     controller.screen.set_cursor(1, 1)
     controller.screen.print("DIAG: hands clear ")
     wait(1000, MSEC)
 
-    results = []
-    for name, motor in (("L", lift_left), ("R", lift_right)):
-        motor.spin(FORWARD, 25, PERCENT)
+    results = []    # (driven rpm, passive rpm) for L driven, then R driven
+    for driven, passive in ((lift_left, lift_right), (lift_right, lift_left)):
+        passive.set_stopping(COAST)
+        passive.stop()
+        driven.spin(FORWARD, 8, VOLT)
         wait(400, MSEC)
-        v = motor.velocity(RPM)
-        motor.stop()
-        wait(300, MSEC)
-        results.append((name, v))
+        dv = driven.velocity(RPM)
+        pv = passive.velocity(RPM)
+        driven.set_stopping(BRAKE)
+        driven.stop()
+        passive.set_stopping(BRAKE)
+        passive.stop()
+        wait(600, MSEC)
+        results.append((dv, pv))
 
-    lift.set_max_torque(MAX_TORQUE_PCT, PERCENT)
-
-    lv = results[0][1]
-    rv = results[1][1]
+    MOVED = 3   # rpm; below this counts as "did not move"
+    fighting   = False
+    not_linked = False
+    no_move    = False
+    for dv, pv in results:
+        if abs(dv) < MOVED:
+            no_move = True
+        elif abs(pv) < MOVED:
+            not_linked = True
+        elif (dv > 0) != (pv > 0):
+            fighting = True
 
     controller.screen.clear_screen()
     controller.screen.set_cursor(1, 1)
-    controller.screen.print("L{:>4.0f}  R{:>4.0f}   ".format(lv, rv))
+    controller.screen.print("L>{:+4.0f} R{:+4.0f}".format(results[0][0], results[0][1]))
     controller.screen.set_cursor(2, 1)
-  
-    if abs(lv) < 5 or abs(rv) < 5:
-        controller.screen.print("motor is dead!     ")
-    elif (lv > 0) == (rv > 0):
-        controller.screen.print("OK - same dir   ")
+    controller.screen.print("R>{:+4.0f} L{:+4.0f}".format(results[1][0], results[1][1]))
+    controller.screen.set_cursor(3, 1)
+    if fighting:
+        controller.screen.print("FIGHTING flip one ")
+    elif not_linked:
+        controller.screen.print("NOT LINKED        ")
+    elif no_move:
+        controller.screen.print("NO MOVE too heavy ")
     else:
-        controller.screen.print("motors are colliding  ")
+        controller.screen.print("OK same dir       ")
 
-    wait(4000, MSEC)
+    wait(5000, MSEC)
     controller.screen.clear_screen()
+
+    lift.set_max_torque(MAX_TORQUE_PCT, PERCENT)
+    lift_volts  = 0.0
+    lift_mode   = ""        # force the next loop to re-command
+    stall_timer = 0
+    stall_lock  = False
 
 
 def ensure_homed():
@@ -295,23 +338,20 @@ def ensure_homed():
 # ============================================================
 #  LIFT CONTROL  -- called every loop
 # ============================================================
-def hold_power(pos):
-    global hold_prev_err
-
-    err = hold_target - pos
-    if abs(err) < HOLD_DEADBAND_DEG:
-        err = 0.0
-
-    d = err - hold_prev_err
-    hold_prev_err = err
-
-    return clamp(HOLD_KP * err + HOLD_KD * d,
-                 -HOLD_MAX_PCT, HOLD_MAX_PCT)
+def lift_hold_here():
+    # Each motor holds ITS OWN encoder reading. Handing both the
+    # same number makes them fight over a degree of gear backlash
+    # for the whole match.
+    lift.set_stopping(HOLD)
+    lift_left.spin_to_position(lift_left.position(DEGREES), DEGREES,
+                               HOLD_SPEED_PCT, PERCENT, wait=False)
+    lift_right.spin_to_position(lift_right.position(DEGREES), DEGREES,
+                                HOLD_SPEED_PCT, PERCENT, wait=False)
 
 
 def lift_control():
-    global lift_cmd, hold_target, hold_prev_err
-    global stall_timer, thermal_lock, screen_timer
+    global lift_volts, lift_mode, stall_timer, stall_lock
+    global thermal_lock, screen_timer, on_stop
 
     # --- manual re-home: hold B + DOWN ---
     # Use if the lift gets out of sync mid-practice (someone
@@ -341,142 +381,130 @@ def lift_control():
 
     up   = controller.buttonL1.pressing()
     down = controller.buttonL2.pressing()
-    driving = False
 
-    # --- decide target command ---
-    if thermal_lock:
-        target = 0                                  # let it cool
-        hold_target = pos
-    elif up and pos < LIFT_MAX_DEG:
-        target = UP_PCT
-        hold_target = pos      # setpoint follows the arm...
-        driving = True
-    elif down and pos > LIFT_MIN_DEG:
-        target = -DOWN_PCT
-        hold_target = pos      # ...so release captures the height
-        driving = True
-    elif pos > HOLD_THRESHOLD_DEG or hold_target > HOLD_THRESHOLD_DEG:
-        target = hold_power(pos)
+    # Letting go of both buttons is what clears a stall.
+    if not up and not down:
+        stall_lock = False
+
+    # --- decide what the lift should be doing ---
+    # The ONLY things that can refuse an UP press are listed right
+    # here: thermal lock (off by default), a stall that has not
+    # been released yet, and the upper soft limit (off by default).
+    blocked = thermal_lock or stall_lock
+    at_top  = USE_MAX_LIMIT and pos >= LIFT_MAX_DEG
+    if up and not blocked and not at_top:
+        mode = "UP"
+    elif down and not up and not blocked:
+        mode = "DOWN"
+    elif thermal_lock:
+        mode = "COOL"          # de-energize so it can actually cool
+    elif CALIBRATING or on_stop:
+        mode = "REST"          # on the bottom stop (or bench mode)
     else:
-        target = 0             # resting on the bottom stop
-        hold_target = pos
+        mode = "HOLD"          # anywhere else: never let it fall
+
+    # --- apply ---
+    if mode == "UP":
+        # Re-sent every loop because the voltage ramps.
+        on_stop = False
+        lift_volts = min(UP_VOLTS, lift_volts + SLEW_VOLTS_PER_LOOP)
+        lift.spin(FORWARD, lift_volts, VOLT)
+    else:
+        lift_volts = 0.0
+        if mode != lift_mode:
+            # Commanded ONCE on the change, not every loop. A hold
+            # that is re-issued every 20 ms re-captures the position
+            # each time and the arm creeps down.
+            if mode == "DOWN":
+                lift.spin(REVERSE, DOWN_PCT, PERCENT)
+            elif mode == "HOLD":
+                lift_hold_here()
+            else:
+                lift.set_stopping(BRAKE)
+                lift.stop()
+    lift_mode = mode
 
     # --- stall protection ---
-    # Only counts while the driver is holding a button and real
-    # power is already on the motors, so the slew ramp is not
-    # mistaken for a stall. Counting the ramp is what made the
-    # lift give up before it ever moved.
-    if (STALL_GUARD and driving
-            and abs(lift_cmd) > STALL_ARM_PCT and vel < STALL_VEL_RPM):
+    # UP: armed only once real power is on, so the ramp is not
+    # mistaken for a stall, and only if STALL_GUARD is on.
+    # DOWN: always armed. Not moving while driving down means the
+    # arm is on the bottom stop, so stop pushing and rest there.
+    if mode == "UP":
+        watching = STALL_GUARD and lift_volts >= STALL_ARM_VOLTS
+        stall_limit = STALL_MS
+    else:
+        watching = (mode == "DOWN")
+        stall_limit = STALL_DOWN_MS
+
+    if watching and vel < STALL_VEL_RPM:
         stall_timer += 20
     else:
         stall_timer = 0
 
-    if stall_timer > STALL_MS:
-        # Something is in the way or we are against a hard stop.
-        # Quit pushing, but keep the arm where it is.
-        hold_target = pos
-        target = hold_power(pos)
-
-    # --- slew limiting (no instant current spikes) ---
-    if target > lift_cmd:
-        lift_cmd = min(target, lift_cmd + SLEW_PER_LOOP)
-    elif target < lift_cmd:
-        lift_cmd = max(target, lift_cmd - SLEW_PER_LOOP)
-
-    # --- apply ---
-    # Stopping mode matters as much as the command here. Above
-    # the bottom stop we stop in HOLD, so the motor's own
-    # position loop pins the arm between trim corrections
-    # instead of letting it creep down. Resting on the stop we
-    # use BRAKE, so it is not fighting the frame all match.
-    if abs(lift_cmd) < 2.0:
-        # Overheated: BRAKE, not HOLD. HOLD keeps the motor
-        # energized against gravity, so the arm would never
-        # actually cool down -- the guard would defeat itself.
-        if pos > HOLD_THRESHOLD_DEG and not thermal_lock:
-            lift.set_stopping(HOLD)
-        else:
-            lift.set_stopping(BRAKE)
-        lift.stop()
-    else:
-        lift.spin(FORWARD, lift_cmd, PERCENT)
+    if stall_timer > stall_limit:
+        stall_lock  = True
+        stall_timer = 0
+        if mode == "DOWN":
+            on_stop = True
 
     # --- driver feedback (throttled) ---
     screen_timer += 20
     if screen_timer >= SCREEN_UPDATE_MS:
         screen_timer = 0
-        controller.screen.set_cursor(1, 1)
         if thermal_lock:
-            controller.screen.print("LIFT HOT - COOLING ")
+            label = "HOT"
+        elif stall_lock and not on_stop:
+            label = "STALL"
+        elif up and at_top:
+            label = "MAX"
         else:
-            controller.screen.print(
-                "Lft {:>3.0f}C P{:>4.0f}  ".format(temp, pos))
+            label = mode
+        controller.screen.set_cursor(1, 1)
+        controller.screen.print(
+            "L{:>3.0f}C {:>4.0f} {:<6}".format(temp, pos, label))
 
 
 # ============================================================
 #  INTAKE CONTROL  -- called every loop
 #
-#  Override (<SG6>): one cup at a time, so this is a grabber,
-#  not a conveyor.
+#  Last season's intake, unchanged: R1 runs intake + conveyor in,
+#  R2 runs them out, release stops (HOLD, set in user_control).
 #
-#  R1 held  : rollers pull in until the cup seats against the
-#             hard stop and the rollers stall. Then they stop in
-#             HOLD and pinch the cup. Keeping R1 held after that
-#             does nothing, so the motors are never left grinding.
-#  R2 held  : rollers run backwards at placing speed to set the
-#             cup down on a goal / stack (or eject it). Release
-#             to stop.
-#  Nothing  : rollers hold position, so a seated cup stays put
-#             while driving.
-#  Both held: R2 wins -- getting rid of a cup is what matters
-#             when you are about to be called for <SG6>.
+#  Override note: rule <SG6> allows only ONE cup and ONE pin on
+#  the robot. This intake does not stop itself, so not pulling in
+#  a second cup is on the driver.
 # ============================================================
 def intake_control():
-    global intake_run_ms, intake_stall_ms, intake_seated, intake_grabbed
-
-    if controller.buttonR2.pressing():
-        intake.spin(REVERSE, INTAKE_OUT_PCT, PERCENT)
-        intake_run_ms   = 0
-        intake_stall_ms = 0
-        intake_grabbed  = False
-        if intake_seated:
-            intake_seated = False
-            controller.screen.set_cursor(2, 1)
-            controller.screen.print("                  ")
-        return
-
-    if not controller.buttonR1.pressing():
-        # Released: hold whatever we have. Also re-arms the grab,
-        # so if the cup got knocked loose the next R1 press
-        # re-grips it (it just re-stalls and stops again).
-        intake.stop()
-        intake_run_ms   = 0
-        intake_stall_ms = 0
-        intake_grabbed  = False
-        return
-
-    # --- R1 held: grabbing ---
-    if intake_grabbed:
-        intake.stop()          # this press already seated it, don't grind
-        return
-
-    intake.spin(FORWARD, INTAKE_IN_PCT, PERCENT)
-    intake_run_ms += 20
-    if intake_run_ms < INTAKE_ARM_MS:
-        return                 # still spinning up, not a stall
-
-    if abs(intake.velocity(RPM)) < INTAKE_STALL_VEL_RPM:
-        intake_stall_ms += 20
+    if controller.buttonR1.pressing():
+        intake_conveyor.spin(FORWARD, MECH_SPEED, PERCENT)
+    elif controller.buttonR2.pressing():
+        intake_conveyor.spin(REVERSE, MECH_SPEED, PERCENT)
     else:
-        intake_stall_ms = 0
+        intake_conveyor.stop()
 
-    if intake_stall_ms >= INTAKE_STALL_MS:
-        intake_grabbed = True
-        intake_seated  = True
-        intake.stop()          # HOLD: pinch the cup
-        controller.screen.set_cursor(2, 1)
-        controller.screen.print("CUP SEATED        ")
+
+# ============================================================
+#  CLAW CONTROL  -- called every loop
+#
+#  Pneumatic claw on three-wire port A. Button A toggles it: one
+#  press flips the solenoid, and it stays there until the next
+#  press. Acts on the press itself, so holding A does not make it
+#  chatter.
+# ============================================================
+def claw_set(on):
+    global claw_on
+    claw_on = on
+    claw.set(on)
+    controller.screen.set_cursor(2, 1)
+    controller.screen.print("CLAW ON " if on else "CLAW OFF")
+
+
+def claw_control():
+    global claw_btn_prev
+    pressed = controller.buttonA.pressing()
+    if pressed and not claw_btn_prev:
+        claw_set(not claw_on)
+    claw_btn_prev = pressed
 
 
 # ============================================================
@@ -517,14 +545,15 @@ def user_control():
 
     left_drive.set_stopping(BRAKE)
     right_drive.set_stopping(BRAKE)
-    intake.set_stopping(HOLD)              # pinch the cup when stopped
-    intake.set_max_torque(INTAKE_MAX_TORQUE_PCT, PERCENT)
-    intake.stop()
+    intake_conveyor.set_stopping(HOLD)     # as last season
+    intake_conveyor.stop()
+    claw_set(claw_on)                      # re-assert + show state
 
     while True:
         drive_control()
         lift_control()
         intake_control()
+        claw_control()
         wait(20, MSEC)   # MUST stay inside the loop
 
 
@@ -541,20 +570,28 @@ def autonomous():
 #  COMPETITION
 #  Must be at global scope, at the bottom of the file.
 # ============================================================
+claw_on = CLAW_START_ON
+claw.set(claw_on)
+
 competition = Competition(user_control, autonomous)
 
 
 # ============================================================
-#  CALIBRATION: finding LIFT_MAX_DEG
+#  CALIBRATION: finding LIFT_MAX_DEG   (optional)
 #
-#  1. Set LIFT_MAX_DEG to 9999 temporarily.
+#  The lift works without this. Do it when you want the lift to
+#  stop by itself at the top instead of leaning on the stall guard.
+#  1. Set CALIBRATING = True. That turns the hold off so the arm
+#     can be moved by hand. It will NOT stay up on its own.
 #  2. Run the program and let the lift home.
 #  3. Raise the lift BY HAND to its safe top position --
 #     stop before anything binds or bottoms out.
-#  4. Read the P value on the controller screen.
-#  5. Subtract about 10 degrees for margin, put that number
-#     into LIFT_MAX_DEG.
-#  6. Re-run and confirm the lift stops on its own.
+#  4. Read the middle number on the controller's top line
+#     (temperature, POSITION, state).
+#  5. Subtract about 10 degrees for margin and put that number
+#     into LIFT_MAX_DEG. Set USE_MAX_LIMIT = True and
+#     CALIBRATING = False.
+#  6. Re-run and confirm the lift stops on its own, showing MAX.
 #
 #  BANDING (matters more than any of this code at 1:1):
 #  With power off, the lift should roughly balance at mid
@@ -565,13 +602,29 @@ competition = Competition(user_control, autonomous)
 #  Watch the temperature readout while driving. Past 40C in
 #  normal use means the bands are not carrying enough load.
 #
-#  TUNING THE HOLD:
-#  Band the arm first -- the hold loop is trim, not a crane.
-#  Then, with the arm at mid height, let go of both buttons:
-#    - sags slowly downward  -> raise HOLD_KP by 0.4
-#    - bounces or buzzes     -> raise HOLD_KD by 2, or drop
-#                               HOLD_KP by 0.4
-#    - drifts a degree or two and settles -> correct, leave it
-#  If it holds at mid height but sags with a block at full
-#  extension, raise HOLD_MAX_PCT before touching HOLD_KP.
+#  IF THE LIFT STALLS OR WON'T GO ALL THE WAY UP
+#  Work down this list in order. Read the word at the end of the
+#  controller's top line while holding L1:
+#    MAX   - not a stall. Only appears with USE_MAX_LIMIT on:
+#            LIFT_MAX_DEG is too small; re-measure it.
+#    STALL - the motors ran out of torque. Let go, then:
+#  1. Hold B + UP with the lift down and read the verdict. If it
+#     says FIGHTING, flip one lift reverse flag. Nothing else will
+#     help until that is fixed.
+#  2. Check the temperature on the same line. Past ~50C the V5
+#     firmware cuts motor power on its own. A lift that has been
+#     stalled a few times is hot. Let it cool 10 minutes.
+#  3. Bands. With the program stopped, the arm should roughly
+#     balance at mid height. If it drops, add bands.
+#  4. Still stalls with good bands: two green motors at 1:1 are
+#     simply not enough for this lift. Swap to red cartridges and
+#     set LIFT_CARTRIDGE = GearSetting.RATIO_36_1 (double torque),
+#     or gear the lift down (12T driving 36T or 60T). No code
+#     setting can add torque the motors do not have -- UP already
+#     sends the full 12 V.
+#
+#  THE HOLD
+#  There is nothing to tune. The motors hold the release position
+#  themselves. If the arm sags while holding, that is torque too:
+#  same list, from step 2.
 # ============================================================
