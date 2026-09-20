@@ -3,7 +3,7 @@
 #  VEXcode V5 (Python)
 #
 #  Drivetrain : PORT11/12 left, PORT13/14 right
-#  Lift (DR4B): PORT10 left, PORT9 right
+#  Lift (DR4B): TWO motors, PORT10 left + PORT9 right (reversed)
 #               green cartridge, 1:1, mirrored gear train
 #  Intake     : PORT7, one motor drives intake + conveyor
 #               (last season's driver control, unchanged)
@@ -42,8 +42,16 @@ right_drive = MotorGroup(right_motor_a, right_motor_b)
 # code change, that swap is the cheapest real fix: change the
 # cartridges, change this one line, nothing else moves.
 LIFT_CARTRIDGE = GearSetting.RATIO_18_1
-lift_left  = Motor(Ports.PORT10, LIFT_CARTRIDGE, False)
-lift_right = Motor(Ports.PORT9,  LIFT_CARTRIDGE, True)
+
+# BOTH lift motors are mapped right here. The numbers must match
+# the ports the two lift cables are REALLY plugged into on the
+# brain. A motor on the wrong port gives no error at all: that
+# motor just never moves, and the other one tries to lift alone.
+# The brain screen names any lift motor it cannot find.
+LIFT_LEFT_PORT  = 10
+LIFT_RIGHT_PORT = 9
+lift_left  = Motor(getattr(Ports, "PORT" + str(LIFT_LEFT_PORT)),  LIFT_CARTRIDGE, False)
+lift_right = Motor(getattr(Ports, "PORT" + str(LIFT_RIGHT_PORT)), LIFT_CARTRIDGE, True)
 lift = MotorGroup(lift_left, lift_right)
 
 # intake + conveyor
@@ -167,6 +175,8 @@ thermal_lock = False    # True = lift disabled, too hot
 is_homed     = False    # has the lift found its bottom yet
 screen_timer = 0        # ms since last screen update
 on_stop      = False    # True = arm is known to be on its bottom stop
+lift_verdict = ""       # last per-motor verdict shown on the brain
+lift_press_moved = False  # did the arm move at all during this L1 press
 claw_on       = False   # current solenoid state
 claw_btn_prev = False   # button A last loop, for press detection
 
@@ -336,6 +346,112 @@ def ensure_homed():
 
 
 # ============================================================
+#  LIFT MOTOR CHECK + LIVE READOUT  (brain screen)
+#
+#  Answers "is the second motor actually doing anything?".
+#  The brain screen shows, for EACH lift motor: whether the brain
+#  can see it, its speed, the current it is drawing and its
+#  temperature. Hold L1 and read the bottom line:
+#    BOTH PULLING          - both motors are working. If the lift
+#                            still won't rise it is torque: bands,
+#                            red cartridges, gearing.
+#    ONLY LEFT/RIGHT PULLS - the other motor is idle. Bad cable,
+#                            dead port, dead motor, or its shaft
+#                            is not gripping the gear.
+#    NOT FOUND             - the brain cannot see that motor on
+#                            the port number set at the top.
+#    BOTH PULL, THEN STALLED - it rose, then stopped with both at
+#                            full current: top of travel, or the
+#                            motors ran out of torque part way up.
+#    BOTH MAXED, NO MOVE   - both at full current and it never
+#                            moved: fighting each other (run B+UP)
+#                            or the load is simply too heavy.
+# ============================================================
+def lift_missing():
+    names = []
+    if not lift_left.installed():
+        names.append("LEFT p" + str(LIFT_LEFT_PORT))
+    if not lift_right.installed():
+        names.append("RIGHT p" + str(LIFT_RIGHT_PORT))
+    return names
+
+
+def lift_check():
+    # Run once when driver control starts. Does not block the
+    # program: a robot with one dead lift motor can still drive.
+    missing = lift_missing()
+    if not missing:
+        return
+    brain.screen.clear_screen()
+    brain.screen.set_cursor(1, 1)
+    brain.screen.print("LIFT MOTOR NOT FOUND:")
+    row = 2
+    for name in missing:
+        brain.screen.set_cursor(row, 1)
+        brain.screen.print("  " + name)
+        row += 1
+    brain.screen.set_cursor(row + 1, 1)
+    brain.screen.print("Check the cable and the port")
+    brain.screen.set_cursor(row + 2, 1)
+    brain.screen.print("numbers at the top of the code.")
+    controller.screen.set_cursor(3, 1)
+    controller.screen.print("NO " + missing[0] + "     ")
+    controller.rumble("- - -")
+    wait(1500, MSEC)
+
+
+def lift_telemetry(mode, pos):
+    global lift_verdict, lift_press_moved
+
+    rows = []
+    amps = []
+    for name, port, m in (("L", LIFT_LEFT_PORT, lift_left),
+                          ("R", LIFT_RIGHT_PORT, lift_right)):
+        if m.installed():
+            a = m.current(CurrentUnits.AMP)
+            amps.append(a)
+            rows.append("{} p{:<2} {:>4.0f}rpm {:>4.1f}A {:>3.0f}C   ".format(
+                name, port, m.velocity(RPM), a,
+                m.temperature(TemperatureUnits.CELSIUS)))
+        else:
+            amps.append(-1.0)
+            rows.append("{} p{:<2} NOT FOUND              ".format(name, port))
+
+    # Only judge while really pushing up; keep the last verdict on
+    # screen after L1 is released so it can be read.
+    if mode != "UP" and mode != "STALL":
+        lift_press_moved = False           # new press starts fresh
+    moving = abs(lift.velocity(RPM)) >= STALL_VEL_RPM
+    if mode == "UP" and moving:
+        lift_press_moved = True
+
+    if mode == "UP" and lift_volts >= STALL_ARM_VOLTS:
+        la, ra = amps[0], amps[1]
+        if la < 0 or ra < 0:
+            lift_verdict = "MOTOR NOT FOUND - see above"
+        elif max(la, ra) > 0.6 and min(la, ra) < 0.25 * max(la, ra):
+            lift_verdict = "ONLY " + ("LEFT" if la > ra else "RIGHT") + " PULLS - other idle"
+        elif min(la, ra) > 1.8 and not moving:
+            if lift_press_moved:
+                # it did rise, then ran out: a hard stop or not enough torque
+                lift_verdict = "BOTH PULL, THEN STALLED"
+            else:
+                # never moved at all with both maxed: fighting, or far too heavy
+                lift_verdict = "BOTH MAXED, NO MOVE (B+UP)"
+        else:
+            lift_verdict = "BOTH PULLING"
+
+    brain.screen.set_cursor(1, 1)
+    brain.screen.print("LIFT {:<6} pos {:>5.0f} deg      ".format(mode, pos))
+    brain.screen.set_cursor(2, 1)
+    brain.screen.print(rows[0])
+    brain.screen.set_cursor(3, 1)
+    brain.screen.print(rows[1])
+    brain.screen.set_cursor(4, 1)
+    brain.screen.print("> {:<30}".format(lift_verdict if lift_verdict else "hold L1 to test"))
+
+
+# ============================================================
 #  LIFT CONTROL  -- called every loop
 # ============================================================
 def lift_hold_here():
@@ -408,7 +524,10 @@ def lift_control():
         # Re-sent every loop because the voltage ramps.
         on_stop = False
         lift_volts = min(UP_VOLTS, lift_volts + SLEW_VOLTS_PER_LOOP)
-        lift.spin(FORWARD, lift_volts, VOLT)
+        # Each motor is commanded by name, not through the group,
+        # so there is no doubt that BOTH get the full voltage.
+        lift_left.spin(FORWARD, lift_volts, VOLT)
+        lift_right.spin(FORWARD, lift_volts, VOLT)
     else:
         lift_volts = 0.0
         if mode != lift_mode:
@@ -462,6 +581,7 @@ def lift_control():
         controller.screen.set_cursor(1, 1)
         controller.screen.print(
             "L{:>3.0f}C {:>4.0f} {:<6}".format(temp, pos, label))
+        lift_telemetry(label, pos)
 
 
 # ============================================================
@@ -541,6 +661,7 @@ def drive_control():
 #  DRIVER CONTROL
 # ============================================================
 def user_control():
+    lift_check()          # names a lift motor the brain cannot see
     ensure_homed()
 
     left_drive.set_stopping(BRAKE)
@@ -608,6 +729,9 @@ competition = Competition(user_control, autonomous)
 #    MAX   - not a stall. Only appears with USE_MAX_LIMIT on:
 #            LIFT_MAX_DEG is too small; re-measure it.
 #    STALL - the motors ran out of torque. Let go, then:
+#  0. Read the BRAIN screen while holding L1. It shows both lift
+#     motors separately and says if only one is pulling or if one
+#     is not found on its port. Fix that first.
 #  1. Hold B + UP with the lift down and read the verdict. If it
 #     says FIGHTING, flip one lift reverse flag. Nothing else will
 #     help until that is fixed.
