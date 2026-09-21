@@ -381,20 +381,17 @@ def drive_control():
     throttle = controller.axis3.position()
     steering = controller.axis1.position()
 
-    # deadband
     if abs(throttle) < DEADBAND:
         throttle = 0
     if abs(steering) < DEADBAND:
         steering = 0
 
-    left_power  = throttle + (steering * TURN_GAIN)
-    right_power = throttle - (steering * TURN_GAIN)
-
-    # Scale both sides down together if either exceeds 100
-    biggest = max(abs(left_power), abs(right_power))
-    if biggest > 100:
-        left_power  = left_power  * 100 / biggest
-        right_power = right_power * 100 / biggest
+    if steering != 0:
+        left_power = steering
+        right_power = -steering
+    else:
+        left_power = throttle
+        right_power = throttle
 
     if left_power == 0 and right_power == 0:
         left_drive.stop()
@@ -402,7 +399,6 @@ def drive_control():
     else:
         left_drive.spin(FORWARD, left_power, PERCENT)
         right_drive.spin(FORWARD, right_power, PERCENT)
-
 
 # ============================================================
 #  DRIVER CONTROL
