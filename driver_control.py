@@ -413,6 +413,9 @@ def user_control():
     left_drive.set_stopping(BRAKE)
     right_drive.set_stopping(BRAKE)
 
+    left_drive.set_max_torque(100, PERCENT)
+    right_drive.set_max_torque(100, PERCENT)
+
     while True:
         drive_control()
         lift_control()
