@@ -33,6 +33,9 @@ lift_left  = Motor(Ports.PORT10, GearSetting.RATIO_18_1, False)
 lift_right = Motor(Ports.PORT9,  GearSetting.RATIO_18_1, True)
 lift = MotorGroup(lift_left, lift_right)
 
+# intake motor
+intake = Motor(Ports.PORT8, GearSetting.RATIO_18_1, False)
+
 
 # ============================================================
 #  TUNING CONSTANTS
@@ -400,6 +403,17 @@ def drive_control():
         left_drive.spin(FORWARD, left_power, PERCENT)
         right_drive.spin(FORWARD, right_power, PERCENT)
 
+
+# intake function
+def intake_control():
+    if controller.buttonR1.pressing():
+        intake.spin(FORWARD, 100, PERCENT)
+    elif controller.buttonR2.pressing():
+        intake.spin(REVERSE, 100, PERCENT)
+    else:
+        intake.stop()
+
+
 # ============================================================
 #  DRIVER CONTROL
 # ============================================================
@@ -414,6 +428,7 @@ def user_control():
 
     while True:
         drive_control()
+        intake_control()
         lift_control()
         wait(20, MSEC)   # MUST stay inside the loop
 
