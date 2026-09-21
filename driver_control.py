@@ -3,15 +3,21 @@
 #  VEXcode V5 (Python)
 #
 #  Drivetrain : PORT11/12 left, PORT13/14 right
-#  Lift (DR4B): PORT10 left, PORT9 right
+#  Lift (DR4B): TWO motors, PORT10 left + PORT9 right (reversed)
 #               green cartridge, 1:1, mirrored gear train
+#  Intake     : PORT8, one motor drives intake + conveyor
+#  Claw       : pneumatic solenoid, three-wire port A
 #
 #  Controls:
-#    Left stick vertical  (axis3) - throttle
-#    Right stick horiz.   (axis1) - steering
+#    Left stick vertical  (axis3) - forward/backward
+#    Right stick horiz.   (axis1) - pivot turning
 #    L1 - lift up
 #    L2 - lift down
+#    R1 - intake + conveyor in
+#    R2 - intake + conveyor out
+#    A  - claw toggle
 #    B + DOWN - re-home the lift
+#    B + UP   - lift motor direction diagnostic
 # ============================================================
 
 from vex import *
@@ -19,7 +25,10 @@ from vex import *
 brain = Brain()
 controller = Controller()
 
-# drive train motors
+# ============================================================
+#  DRIVETRAIN MOTORS
+# ============================================================
+
 left_motor_a = Motor(Ports.PORT11, GearSetting.RATIO_18_1, True)
 left_motor_b = Motor(Ports.PORT12, GearSetting.RATIO_18_1, True)
 left_drive = MotorGroup(left_motor_a, left_motor_b)
@@ -28,13 +37,47 @@ right_motor_a = Motor(Ports.PORT13, GearSetting.RATIO_18_1, False)
 right_motor_b = Motor(Ports.PORT14, GearSetting.RATIO_18_1, False)
 right_drive = MotorGroup(right_motor_a, right_motor_b)
 
-# lift motors
-lift_left  = Motor(Ports.PORT10, GearSetting.RATIO_18_1, False)
-lift_right = Motor(Ports.PORT9,  GearSetting.RATIO_18_1, True)
+
+# ============================================================
+#  LIFT MOTORS
+# ============================================================
+
+LIFT_CARTRIDGE = GearSetting.RATIO_18_1
+
+LIFT_LEFT_PORT = 10
+LIFT_RIGHT_PORT = 9
+
+lift_left = Motor(
+    getattr(Ports, "PORT" + str(LIFT_LEFT_PORT)),
+    LIFT_CARTRIDGE,
+    False
+)
+
+lift_right = Motor(
+    getattr(Ports, "PORT" + str(LIFT_RIGHT_PORT)),
+    LIFT_CARTRIDGE,
+    True
+)
+
 lift = MotorGroup(lift_left, lift_right)
 
-# intake motor
-intake = Motor(Ports.PORT8, GearSetting.RATIO_18_1, False)
+
+# ============================================================
+#  INTAKE
+# ============================================================
+
+intake_conveyor = Motor(
+    Ports.PORT8,
+    GearSetting.RATIO_18_1,
+    False
+)
+
+
+# ============================================================
+#  CLAW
+# ============================================================
+
+claw = DigitalOut(brain.three_wire_port.a)
 
 
 # ============================================================
@@ -42,441 +85,1225 @@ intake = Motor(Ports.PORT8, GearSetting.RATIO_18_1, False)
 # ============================================================
 
 # ---- Drivetrain ----
-DEADBAND  = 5       # ignore joystick noise below this percent
-TURN_GAIN = 1.0     # raise toward 1.5 for sharper turning
+DEADBAND = 5
 
-# ---- Lift: protection ----
-# Torque cap limits current so the motors can't sit at stall
-# current. At 1:1 a banded DR4B needs everything the motors
-# have just to break loose from rest, so this is uncapped and
-# the thermal guard plus stall timer do the protecting instead.
-# If the motors run hot in normal use, the answer is more
-# rubber band, not a lower number here.
+# ---- Intake ----
+MECH_SPEED = 100
+
+# ---- Claw ----
+CLAW_START_ON = False
+
+# ---- Lift torque ----
 MAX_TORQUE_PCT = 100
 
-# ---- Lift: soft limits (motor degrees; at 1:1 = arm degrees)
-# MIN must be at or below the homed zero, or the down button is
-# dead everywhere below it.
-LIFT_MIN_DEG = -5       # tolerance below the homed zero
-LIFT_MAX_DEG = 135      # <-- MEASURE AND REPLACE (see bottom)
+# ---- Lift upper limit ----
+USE_MAX_LIMIT = False
+LIFT_MAX_DEG = 135
 
-# ---- Lift: speeds ----
-UP_PCT   = 100          # effectively capped by MAX_TORQUE_PCT
-DOWN_PCT = 40           # gravity helps; don't slam the bottom
+# ---- Lift drive ----
+UP_VOLTS = 12.0
+DOWN_PCT = 40
+SLEW_VOLTS_PER_LOOP = 3.0
 
-# ---- Lift: position hold ----
-# The lift holds whatever height you release it at, by driving
-# back to a remembered setpoint. This is what makes it stay
-# level with nobody touching it -- a fixed trim percentage
-# cannot do that, because the power needed to hold changes
-# with arm angle and band tension.
-HOLD_KP        = 1.4    # percent power per degree of sag
-HOLD_KD        = 6.0    # damping; raise if it oscillates
-HOLD_MAX_PCT = 85     # ceiling on hold effort
-HOLD_DEADBAND_DEG = 1.5 # don't fight sensor noise
-HOLD_THRESHOLD_DEG = 15 # below this, rest on the stop instead
+# ---- Lift hold ----
+HOLD_SPEED_PCT = 100
+CALIBRATING = False
 
-# ---- Lift: smoothing ----
-SLEW_PER_LOOP = 12      # max percent change per 20 ms loop
-
-# ---- Lift: thermal guard (Celsius) ----
-# DISABLED at driver request while chasing a no-move problem.
-# Set back to True once the lift actually lifts. Note the V5
-# firmware still derates the motors on its own near 55C, so
-# with this off you get no warning before that happens -- the
-# lift just quietly goes weak. Temperature is still shown on
-# the controller screen; watch it.
+# ---- Thermal protection ----
 THERMAL_GUARD = False
-TEMP_CUTOFF_C = 50      # V5 motors self-limit near 55C
+TEMP_CUTOFF_C = 50
 TEMP_RESUME_C = 45
 
-# ---- Lift: stall detection ----
-# Only armed while the driver is actually holding a button AND
-# real power is already applied, so the slew ramp can't be
-# mistaken for a stall.
-# Left ON. This is the guard most likely to look like "the
-# lift won't move" -- it gives up after half a second of no
-# motion. To rule it out, set False for ONE brief test only,
-# then put it back. With it off, a jammed lift will happily
-# cook both motors.
-STALL_GUARD   = True
+# ---- Stall protection ----
+STALL_GUARD = True
 STALL_VEL_RPM = 2
-STALL_MS      = 1200
-# Must stay below DOWN_PCT, or a jam while lowering is never
-# detected -- the command never exceeds the threshold.
-STALL_ARM_PCT = 30
+STALL_MS = 1200
+STALL_DOWN_MS = 300
+STALL_ARM_VOLTS = 6.0
 
-# ---- Lift: homing ----
-HOMING_PCT        = 25    # gentle downward power while homing
-HOMING_TORQUE_PCT = 30    # low, so we touch the stop softly
-HOMING_GRACE_MS   = 300   # ignore velocity while it gets moving
-HOMING_SETTLE_MS  = 250   # not moving this long = at bottom
-HOMING_TIMEOUT_MS = 2500  # give up rather than grind forever
+# ---- Homing ----
+HOMING_PCT = 25
+HOMING_TORQUE_PCT = 30
+HOMING_GRACE_MS = 300
+HOMING_SETTLE_MS = 250
+HOMING_TIMEOUT_MS = 2500
 
-# ---- Controller screen ----
-# The controller screen cannot keep up with a 20 ms loop.
-# Updating it too often causes visible lag.
+# ---- Screen ----
 SCREEN_UPDATE_MS = 250
 
 
 # ============================================================
 #  STATE
 # ============================================================
-lift_cmd     = 0.0      # command actually being applied
-hold_target  = 0.0      # height the lift is trying to keep (deg)
-hold_prev_err = 0.0     # previous hold error, for damping
-stall_timer  = 0        # ms spent stalled
-thermal_lock = False    # True = lift disabled, too hot
-is_homed     = False    # has the lift found its bottom yet
-screen_timer = 0        # ms since last screen update
 
+lift_volts = 0.0
+lift_mode = ""
+stall_timer = 0
+stall_lock = False
+thermal_lock = False
+is_homed = False
+screen_timer = 0
+on_stop = False
+lift_verdict = ""
+lift_press_moved = False
+
+claw_on = False
+claw_btn_prev = False
+
+
+# ============================================================
+#  UTILITIES
+# ============================================================
 
 def clamp(v, lo, hi):
     if v < lo:
         return lo
+
     if v > hi:
         return hi
+
     return v
 
 
 # ============================================================
 #  LIFT HOMING
-#
-#  Drives the lift down at low power until it stops moving
-#  against its own bottom stop, then calls that zero. This
-#  means the lift can start at ANY height -- you never have to
-#  remember to rest it down before running the program.
 # ============================================================
+
 def lift_home():
-    global lift_cmd, hold_target, hold_prev_err
-    global stall_timer, thermal_lock, is_homed
+
+    global lift_volts
+    global lift_mode
+    global stall_timer
+    global stall_lock
+    global thermal_lock
+    global is_homed
+    global on_stop
 
     lift.set_stopping(BRAKE)
-    lift.set_max_torque(HOMING_TORQUE_PCT, PERCENT)
+    lift.set_max_torque(
+        HOMING_TORQUE_PCT,
+        PERCENT
+    )
 
     controller.screen.set_cursor(1, 1)
-    controller.screen.print("HOMING LIFT...    ")
+    controller.screen.print(
+        "HOMING LIFT...    "
+    )
 
-    lift.spin(REVERSE, HOMING_PCT, PERCENT)
+    lift.spin(
+        REVERSE,
+        HOMING_PCT,
+        PERCENT
+    )
 
     elapsed = 0
     settled = 0
+
     while elapsed < HOMING_TIMEOUT_MS:
+
         wait(20, MSEC)
+
         elapsed += 20
 
-        # Give it a moment to start moving before judging it as being 
-        # stopped, or it "finds" the bottom instantly by uitself
         if elapsed < HOMING_GRACE_MS:
             continue
 
         if abs(lift.velocity(RPM)) < STALL_VEL_RPM:
+
             settled += 20
+
             if settled >= HOMING_SETTLE_MS:
                 break
+
         else:
+
             settled = 0
 
     lift.stop()
-    lift.set_position(0, DEGREES)
 
+    lift_left.set_position(
+        0,
+        DEGREES
+    )
 
-    lift.set_max_torque(MAX_TORQUE_PCT, PERCENT)
-    lift_cmd      = 0.0
-    hold_target   = 0.0
-    hold_prev_err = 0.0
-    stall_timer   = 0
-    thermal_lock  = False
-    is_homed      = True
+    lift_right.set_position(
+        0,
+        DEGREES
+    )
+
+    lift.set_max_torque(
+        MAX_TORQUE_PCT,
+        PERCENT
+    )
+
+    lift_volts = 0.0
+    lift_mode = ""
+    stall_timer = 0
+    stall_lock = False
+    thermal_lock = False
+    is_homed = True
+    on_stop = True
 
     controller.screen.set_cursor(1, 1)
-    controller.screen.print("LIFT READY        ")
+    controller.screen.print(
+        "LIFT READY        "
+    )
 
 
 # ============================================================
-#  LIFT DIAGNOSTIC  -- hold B + UP
-#
-#  Spins each lift motor ALONE at low power and reports the
-#  direction each one actually turns. On a mirrored gear train
-#  both must read the SAME SIGN here -- that is the whole point
-#  of the reverse flag on lift_right.
-#
-#  Opposite signs = the motors are fighting each other. Net
-#  torque is near zero and both draw stall current, which feels
-#  exactly like "the lift is underpowered." Fix it by flipping
-#  ONE of the booleans at the top of this file, not by raising
-#  torque.
+#  LIFT DIAGNOSTIC
 # ============================================================
+
 def lift_diagnostic():
+
+    global lift_volts
+    global lift_mode
+    global stall_timer
+    global stall_lock
+
     lift.stop()
-    lift.set_max_torque(40, PERCENT)
+
+    lift.set_max_torque(
+        100,
+        PERCENT
+    )
 
     controller.screen.clear_screen()
-    controller.screen.set_cursor(1, 1)
-    controller.screen.print("DIAG: hands clear ")
+
+    controller.screen.set_cursor(
+        1,
+        1
+    )
+
+    controller.screen.print(
+        "DIAG: hands clear "
+    )
+
     wait(1000, MSEC)
 
     results = []
-    for name, motor in (("L", lift_left), ("R", lift_right)):
-        motor.spin(FORWARD, 25, PERCENT)
-        wait(400, MSEC)
-        v = motor.velocity(RPM)
-        motor.stop()
-        wait(300, MSEC)
-        results.append((name, v))
 
-    lift.set_max_torque(MAX_TORQUE_PCT, PERCENT)
+    for driven, passive in (
+        (lift_left, lift_right),
+        (lift_right, lift_left)
+    ):
 
-    lv = results[0][1]
-    rv = results[1][1]
+        passive.set_stopping(
+            COAST
+        )
+
+        passive.stop()
+
+        driven.spin(
+            FORWARD,
+            8,
+            VOLT
+        )
+
+        wait(
+            400,
+            MSEC
+        )
+
+        dv = driven.velocity(
+            RPM
+        )
+
+        pv = passive.velocity(
+            RPM
+        )
+
+        driven.set_stopping(
+            BRAKE
+        )
+
+        driven.stop()
+
+        passive.set_stopping(
+            BRAKE
+        )
+
+        passive.stop()
+
+        wait(
+            600,
+            MSEC
+        )
+
+        results.append(
+            (dv, pv)
+        )
+
+    MOVED = 3
+
+    fighting = False
+    not_linked = False
+    no_move = False
+
+    for dv, pv in results:
+
+        if abs(dv) < MOVED:
+
+            no_move = True
+
+        elif abs(pv) < MOVED:
+
+            not_linked = True
+
+        elif (dv > 0) != (pv > 0):
+
+            fighting = True
 
     controller.screen.clear_screen()
-    controller.screen.set_cursor(1, 1)
-    controller.screen.print("L{:>4.0f}  R{:>4.0f}   ".format(lv, rv))
-    controller.screen.set_cursor(2, 1)
-  
-    if abs(lv) < 5 or abs(rv) < 5:
-        controller.screen.print("motor is dead!     ")
-    elif (lv > 0) == (rv > 0):
-        controller.screen.print("OK - same dir   ")
+
+    controller.screen.set_cursor(
+        1,
+        1
+    )
+
+    controller.screen.print(
+        "L>{:+4.0f} R{:+4.0f}".format(
+            results[0][0],
+            results[0][1]
+        )
+    )
+
+    controller.screen.set_cursor(
+        2,
+        1
+    )
+
+    controller.screen.print(
+        "R>{:+4.0f} L{:+4.0f}".format(
+            results[1][0],
+            results[1][1]
+        )
+    )
+
+    controller.screen.set_cursor(
+        3,
+        1
+    )
+
+    if fighting:
+
+        controller.screen.print(
+            "FIGHTING flip one "
+        )
+
+    elif not_linked:
+
+        controller.screen.print(
+            "NOT LINKED        "
+        )
+
+    elif no_move:
+
+        controller.screen.print(
+            "NO MOVE too heavy "
+        )
+
     else:
-        controller.screen.print("motors are colliding  ")
 
-    wait(4000, MSEC)
+        controller.screen.print(
+            "OK same dir       "
+        )
+
+    wait(
+        5000,
+        MSEC
+    )
+
     controller.screen.clear_screen()
 
+    lift.set_max_torque(
+        MAX_TORQUE_PCT,
+        PERCENT
+    )
+
+    lift_volts = 0.0
+    lift_mode = ""
+    stall_timer = 0
+    stall_lock = False
+
+
+# ============================================================
+#  ENSURE HOMED
+# ============================================================
 
 def ensure_homed():
-    # Homes only once per power cycle. Called at the start of
-    # BOTH autonomous and driver control, because on a real
-    # field the robot is disabled until a period begins --
-    # motors commanded before that would go nowhere.
+
     if not is_homed:
+
         lift_home()
 
 
 # ============================================================
-#  LIFT CONTROL  -- called every loop
+#  LIFT MOTOR CHECK
 # ============================================================
-def hold_power(pos):
-    global hold_prev_err
 
-    err = hold_target - pos
-    if abs(err) < HOLD_DEADBAND_DEG:
-        err = 0.0
+def lift_missing():
 
-    d = err - hold_prev_err
-    hold_prev_err = err
+    names = []
 
-    return clamp(HOLD_KP * err + HOLD_KD * d,
-                 -HOLD_MAX_PCT, HOLD_MAX_PCT)
+    if not lift_left.installed():
 
+        names.append(
+            "LEFT p" + str(
+                LIFT_LEFT_PORT
+            )
+        )
+
+    if not lift_right.installed():
+
+        names.append(
+            "RIGHT p" + str(
+                LIFT_RIGHT_PORT
+            )
+        )
+
+    return names
+
+
+def lift_check():
+
+    missing = lift_missing()
+
+    if not missing:
+        return
+
+    brain.screen.clear_screen()
+
+    brain.screen.set_cursor(
+        1,
+        1
+    )
+
+    brain.screen.print(
+        "LIFT MOTOR NOT FOUND:"
+    )
+
+    row = 2
+
+    for name in missing:
+
+        brain.screen.set_cursor(
+            row,
+            1
+        )
+
+        brain.screen.print(
+            "  " + name
+        )
+
+        row += 1
+
+    brain.screen.set_cursor(
+        row + 1,
+        1
+    )
+
+    brain.screen.print(
+        "Check cable and port"
+    )
+
+    controller.screen.set_cursor(
+        3,
+        1
+    )
+
+    controller.screen.print(
+        "NO "
+        + missing[0]
+        + "     "
+    )
+
+    controller.rumble(
+        "- - -"
+    )
+
+    wait(
+        1500,
+        MSEC
+    )
+
+
+# ============================================================
+#  LIFT TELEMETRY
+# ============================================================
+
+def lift_telemetry(
+    mode,
+    pos
+):
+
+    global lift_verdict
+    global lift_press_moved
+
+    rows = []
+    amps = []
+
+    for name, port, m in (
+        (
+            "L",
+            LIFT_LEFT_PORT,
+            lift_left
+        ),
+        (
+            "R",
+            LIFT_RIGHT_PORT,
+            lift_right
+        )
+    ):
+
+        if m.installed():
+
+            a = m.current(
+                CurrentUnits.AMP
+            )
+
+            amps.append(a)
+
+            rows.append(
+                "{} p{:<2} {:>4.0f}rpm {:>4.1f}A {:>3.0f}C   ".format(
+                    name,
+                    port,
+                    m.velocity(RPM),
+                    a,
+                    m.temperature(
+                        TemperatureUnits.CELSIUS
+                    )
+                )
+            )
+
+        else:
+
+            amps.append(
+                -1.0
+            )
+
+            rows.append(
+                "{} p{:<2} NOT FOUND              ".format(
+                    name,
+                    port
+                )
+            )
+
+    if mode != "UP" and mode != "STALL":
+
+        lift_press_moved = False
+
+    moving = (
+        abs(
+            lift.velocity(
+                RPM
+            )
+        )
+        >= STALL_VEL_RPM
+    )
+
+    if mode == "UP" and moving:
+
+        lift_press_moved = True
+
+    if (
+        mode == "UP"
+        and lift_volts
+        >= STALL_ARM_VOLTS
+    ):
+
+        la = amps[0]
+        ra = amps[1]
+
+        if la < 0 or ra < 0:
+
+            lift_verdict = (
+                "MOTOR NOT FOUND - see above"
+            )
+
+        elif (
+            max(
+                la,
+                ra
+            )
+            > 0.6
+            and min(
+                la,
+                ra
+            )
+            < 0.25
+            * max(
+                la,
+                ra
+            )
+        ):
+
+            if la > ra:
+
+                side = "LEFT"
+
+            else:
+
+                side = "RIGHT"
+
+            lift_verdict = (
+                "ONLY "
+                + side
+                + " PULLS - other idle"
+            )
+
+        elif (
+            min(
+                la,
+                ra
+            )
+            > 1.8
+            and not moving
+        ):
+
+            if lift_press_moved:
+
+                lift_verdict = (
+                    "BOTH PULL, THEN STALLED"
+                )
+
+            else:
+
+                lift_verdict = (
+                    "BOTH MAXED, NO MOVE (B+UP)"
+                )
+
+        else:
+
+            lift_verdict = (
+                "BOTH PULLING"
+            )
+
+    brain.screen.set_cursor(
+        1,
+        1
+    )
+
+    brain.screen.print(
+        "LIFT {:<6} pos {:>5.0f} deg      ".format(
+            mode,
+            pos
+        )
+    )
+
+    brain.screen.set_cursor(
+        2,
+        1
+    )
+
+    brain.screen.print(
+        rows[0]
+    )
+
+    brain.screen.set_cursor(
+        3,
+        1
+    )
+
+    brain.screen.print(
+        rows[1]
+    )
+
+    brain.screen.set_cursor(
+        4,
+        1
+    )
+
+    if lift_verdict:
+
+        message = lift_verdict
+
+    else:
+
+        message = (
+            "hold L1 to test"
+        )
+
+    brain.screen.print(
+        "> {:<30}".format(
+            message
+        )
+    )
+
+
+# ============================================================
+#  LIFT HOLD
+# ============================================================
+
+def lift_hold_here():
+
+    lift.set_stopping(
+        HOLD
+    )
+
+    lift_left.spin_to_position(
+        lift_left.position(
+            DEGREES
+        ),
+        DEGREES,
+        HOLD_SPEED_PCT,
+        PERCENT,
+        wait=False
+    )
+
+    lift_right.spin_to_position(
+        lift_right.position(
+            DEGREES
+        ),
+        DEGREES,
+        HOLD_SPEED_PCT,
+        PERCENT,
+        wait=False
+    )
+
+
+# ============================================================
+#  LIFT CONTROL
+# ============================================================
 
 def lift_control():
-    global lift_cmd, hold_target, hold_prev_err
-    global stall_timer, thermal_lock, screen_timer
 
-    # --- manual re-home: hold B + DOWN ---
-    # Use if the lift gets out of sync mid-practice (someone
-    # moved it by hand, a shaft slipped, etc).
-    if controller.buttonB.pressing() and controller.buttonDown.pressing():
+    global lift_volts
+    global lift_mode
+    global stall_timer
+    global stall_lock
+    global thermal_lock
+    global screen_timer
+    global on_stop
+
+    # B + DOWN = re-home
+    if (
+        controller.buttonB.pressing()
+        and controller.buttonDown.pressing()
+    ):
+
         lift_home()
         return
 
-    # --- motor direction diagnostic: hold B + UP ---
-    if controller.buttonB.pressing() and controller.buttonUp.pressing():
+    # B + UP = diagnostic
+    if (
+        controller.buttonB.pressing()
+        and controller.buttonUp.pressing()
+    ):
+
         lift_diagnostic()
         return
 
-    pos  = lift.position(DEGREES)
-    vel  = abs(lift.velocity(RPM))
-    temp = max(lift_left.temperature(TemperatureUnits.CELSIUS),
-               lift_right.temperature(TemperatureUnits.CELSIUS))
+    pos = lift.position(
+        DEGREES
+    )
 
-    # --- thermal guard (hysteresis so it doesn't chatter) ---
+    vel = abs(
+        lift.velocity(
+            RPM
+        )
+    )
+
+    temp = max(
+        lift_left.temperature(
+            TemperatureUnits.CELSIUS
+        ),
+        lift_right.temperature(
+            TemperatureUnits.CELSIUS
+        )
+    )
+
+    # thermal guard
     if not THERMAL_GUARD:
+
         thermal_lock = False
+
     else:
+
         if temp >= TEMP_CUTOFF_C:
+
             thermal_lock = True
-        if thermal_lock and temp <= TEMP_RESUME_C:
+
+        if (
+            thermal_lock
+            and temp
+            <= TEMP_RESUME_C
+        ):
+
             thermal_lock = False
 
-    up   = controller.buttonL1.pressing()
-    down = controller.buttonL2.pressing()
-    driving = False
+    up = (
+        controller.buttonL1.pressing()
+    )
 
-    # --- decide target command ---
-    if thermal_lock:
-        target = 0                                  # let it cool
-        hold_target = pos
-    elif up and pos < LIFT_MAX_DEG:
-        target = UP_PCT
-        hold_target = pos      # setpoint follows the arm...
-        driving = True
-    elif down and pos > LIFT_MIN_DEG:
-        target = -DOWN_PCT
-        hold_target = pos      # ...so release captures the height
-        driving = True
-    elif pos > HOLD_THRESHOLD_DEG or hold_target > HOLD_THRESHOLD_DEG:
-        target = hold_power(pos)
+    down = (
+        controller.buttonL2.pressing()
+    )
+
+    if not up and not down:
+
+        stall_lock = False
+
+    blocked = (
+        thermal_lock
+        or stall_lock
+    )
+
+    at_top = (
+        USE_MAX_LIMIT
+        and pos
+        >= LIFT_MAX_DEG
+    )
+
+    if (
+        up
+        and not blocked
+        and not at_top
+    ):
+
+        mode = "UP"
+
+    elif (
+        down
+        and not up
+        and not blocked
+    ):
+
+        mode = "DOWN"
+
+    elif thermal_lock:
+
+        mode = "COOL"
+
+    elif CALIBRATING or on_stop:
+
+        mode = "REST"
+
     else:
-        target = 0             # resting on the bottom stop
-        hold_target = pos
 
-    # --- stall protection ---
-    # Only counts while the driver is holding a button and real
-    # power is already on the motors, so the slew ramp is not
-    # mistaken for a stall. Counting the ramp is what made the
-    # lift give up before it ever moved.
-    if (STALL_GUARD and driving
-            and abs(lift_cmd) > STALL_ARM_PCT and vel < STALL_VEL_RPM):
+        mode = "HOLD"
+
+    # ==========================
+    # APPLY LIFT COMMAND
+    # ==========================
+
+    if mode == "UP":
+
+        on_stop = False
+
+        lift_volts = min(
+            UP_VOLTS,
+            lift_volts
+            + SLEW_VOLTS_PER_LOOP
+        )
+
+        lift_left.spin(
+            FORWARD,
+            lift_volts,
+            VOLT
+        )
+
+        lift_right.spin(
+            FORWARD,
+            lift_volts,
+            VOLT
+        )
+
+    else:
+
+        lift_volts = 0.0
+
+        if mode != lift_mode:
+
+            if mode == "DOWN":
+
+                lift.spin(
+                    REVERSE,
+                    DOWN_PCT,
+                    PERCENT
+                )
+
+            elif mode == "HOLD":
+
+                lift_hold_here()
+
+            else:
+
+                lift.set_stopping(
+                    BRAKE
+                )
+
+                lift.stop()
+
+    lift_mode = mode
+
+
+    # ==========================
+    # STALL PROTECTION
+    # ==========================
+
+    if mode == "UP":
+
+        watching = (
+            STALL_GUARD
+            and lift_volts
+            >= STALL_ARM_VOLTS
+        )
+
+        stall_limit = (
+            STALL_MS
+        )
+
+    else:
+
+        watching = (
+            mode == "DOWN"
+        )
+
+        stall_limit = (
+            STALL_DOWN_MS
+        )
+
+    if (
+        watching
+        and vel
+        < STALL_VEL_RPM
+    ):
+
         stall_timer += 20
+
     else:
+
         stall_timer = 0
 
-    if stall_timer > STALL_MS:
-        # Something is in the way or we are against a hard stop.
-        # Quit pushing, but keep the arm where it is.
-        hold_target = pos
-        target = hold_power(pos)
+    if (
+        stall_timer
+        > stall_limit
+    ):
 
-    # --- slew limiting (no instant current spikes) ---
-    if target > lift_cmd:
-        lift_cmd = min(target, lift_cmd + SLEW_PER_LOOP)
-    elif target < lift_cmd:
-        lift_cmd = max(target, lift_cmd - SLEW_PER_LOOP)
+        stall_lock = True
 
-    # --- apply ---
-    # Stopping mode matters as much as the command here. Above
-    # the bottom stop we stop in HOLD, so the motor's own
-    # position loop pins the arm between trim corrections
-    # instead of letting it creep down. Resting on the stop we
-    # use BRAKE, so it is not fighting the frame all match.
-    if abs(lift_cmd) < 2.0:
-        # Overheated: BRAKE, not HOLD. HOLD keeps the motor
-        # energized against gravity, so the arm would never
-        # actually cool down -- the guard would defeat itself.
-        if pos > HOLD_THRESHOLD_DEG and not thermal_lock:
-            lift.set_stopping(HOLD)
-        else:
-            lift.set_stopping(BRAKE)
-        lift.stop()
-    else:
-        lift.spin(FORWARD, lift_cmd, PERCENT)
+        stall_timer = 0
 
-    # --- driver feedback (throttled) ---
+        if mode == "DOWN":
+
+            on_stop = True
+
+
+    # ==========================
+    # DRIVER FEEDBACK
+    # ==========================
+
     screen_timer += 20
-    if screen_timer >= SCREEN_UPDATE_MS:
+
+    if (
+        screen_timer
+        >= SCREEN_UPDATE_MS
+    ):
+
         screen_timer = 0
-        controller.screen.set_cursor(1, 1)
+
         if thermal_lock:
-            controller.screen.print("LIFT HOT - COOLING ")
+
+            label = "HOT"
+
+        elif (
+            stall_lock
+            and not on_stop
+        ):
+
+            label = "STALL"
+
+        elif (
+            up
+            and at_top
+        ):
+
+            label = "MAX"
+
         else:
-            controller.screen.print(
-                "Lft {:>3.0f}C P{:>4.0f}  ".format(temp, pos))
+
+            label = mode
+
+        controller.screen.set_cursor(
+            1,
+            1
+        )
+
+        controller.screen.print(
+            "L{:>3.0f}C {:>4.0f} {:<6}".format(
+                temp,
+                pos,
+                label
+            )
+        )
+
+        lift_telemetry(
+            label,
+            pos
+        )
 
 
 # ============================================================
-#  DRIVE CONTROL  -- called every loop
+#  INTAKE CONTROL
+#
+#  R1 = intake in
+#  R2 = intake out
 # ============================================================
+
+def intake_control():
+
+    if (
+        controller.buttonR1.pressing()
+    ):
+
+        intake_conveyor.spin(
+            FORWARD,
+            MECH_SPEED,
+            PERCENT
+        )
+
+    elif (
+        controller.buttonR2.pressing()
+    ):
+
+        intake_conveyor.spin(
+            REVERSE,
+            MECH_SPEED,
+            PERCENT
+        )
+
+    else:
+
+        intake_conveyor.stop()
+
+
+# ============================================================
+#  CLAW CONTROL
+# ============================================================
+
+def claw_set(on):
+
+    global claw_on
+
+    claw_on = on
+
+    claw.set(on)
+
+    controller.screen.set_cursor(
+        2,
+        1
+    )
+
+    if on:
+
+        controller.screen.print(
+            "CLAW ON "
+        )
+
+    else:
+
+        controller.screen.print(
+            "CLAW OFF"
+        )
+
+
+def claw_control():
+
+    global claw_btn_prev
+
+    pressed = (
+        controller.buttonA.pressing()
+    )
+
+    if (
+        pressed
+        and not claw_btn_prev
+    ):
+
+        claw_set(
+            not claw_on
+        )
+
+    claw_btn_prev = pressed
+
+
+# ============================================================
+#  DRIVE CONTROL
+#
+#  Left stick = straight forward/backward
+#  Right stick = pivot turn
+#
+#  If steering is being used, it overrides throttle.
+# ============================================================
+
 def drive_control():
-    throttle = controller.axis3.position()
-    steering = controller.axis1.position()
 
-    if abs(throttle) < DEADBAND:
+    throttle = (
+        controller.axis3.position()
+    )
+
+    steering = (
+        controller.axis1.position()
+    )
+
+    # deadband
+    if (
+        abs(throttle)
+        < DEADBAND
+    ):
+
         throttle = 0
-    if abs(steering) < DEADBAND:
+
+    if (
+        abs(steering)
+        < DEADBAND
+    ):
+
         steering = 0
 
+
+    # ==========================
+    # PIVOT TURNING
+    # ==========================
+
     if steering != 0:
+
         left_power = steering
         right_power = -steering
+
     else:
+
         left_power = throttle
         right_power = throttle
 
-    if left_power == 0 and right_power == 0:
+
+    # ==========================
+    # APPLY DRIVE POWER
+    # ==========================
+
+    if (
+        left_power == 0
+        and right_power == 0
+    ):
+
         left_drive.stop()
         right_drive.stop()
-    else:
-        left_drive.spin(FORWARD, left_power, PERCENT)
-        right_drive.spin(FORWARD, right_power, PERCENT)
 
-
-# intake function
-def intake_control():
-    if controller.buttonR1.pressing():
-        intake.spin(FORWARD, 100, PERCENT)
-    elif controller.buttonR2.pressing():
-        intake.spin(REVERSE, 100, PERCENT)
     else:
-        intake.stop()
+
+        left_drive.spin(
+            FORWARD,
+            left_power,
+            PERCENT
+        )
+
+        right_drive.spin(
+            FORWARD,
+            right_power,
+            PERCENT
+        )
 
 
 # ============================================================
 #  DRIVER CONTROL
 # ============================================================
+
 def user_control():
+
+    # check lift motors
+    lift_check()
+
+    # home lift
     ensure_homed()
 
-    left_drive.set_stopping(BRAKE)
-    right_drive.set_stopping(BRAKE)
 
-    left_drive.set_max_torque(100, PERCENT)
-    right_drive.set_max_torque(100, PERCENT)
+    # ==========================
+    # DRIVETRAIN SETTINGS
+    # ==========================
+
+    left_drive.set_stopping(
+        BRAKE
+    )
+
+    right_drive.set_stopping(
+        BRAKE
+    )
+
+    left_drive.set_max_torque(
+        100,
+        PERCENT
+    )
+
+    right_drive.set_max_torque(
+        100,
+        PERCENT
+    )
+
+
+    # ==========================
+    # INTAKE SETTINGS
+    # ==========================
+
+    intake_conveyor.set_stopping(
+        HOLD
+    )
+
+    intake_conveyor.stop()
+
+
+    # ==========================
+    # CLAW INITIAL STATE
+    # ==========================
+
+    claw_set(
+        claw_on
+    )
+
+
+    # ==========================
+    # MAIN DRIVER LOOP
+    # ==========================
 
     while True:
+
         drive_control()
-        intake_control()
+
         lift_control()
-        wait(20, MSEC)   # MUST stay inside the loop
+
+        intake_control()
+
+        claw_control()
+
+        wait(
+            20,
+            MSEC
+        )
 
 
 # ============================================================
 #  AUTONOMOUS
 # ============================================================
+
 def autonomous():
+
     ensure_homed()
-    # ... your auton routine here ...
+
+    # Add autonomous routine here
     pass
 
 
 # ============================================================
-#  COMPETITION
-#  Must be at global scope, at the bottom of the file.
+#  COMPETITION SETUP
 # ============================================================
-competition = Competition(user_control, autonomous)
 
+claw_on = CLAW_START_ON
 
-# ============================================================
-#  CALIBRATION: finding LIFT_MAX_DEG
-#
-#  1. Set LIFT_MAX_DEG to 9999 temporarily.
-#  2. Run the program and let the lift home.
-#  3. Raise the lift BY HAND to its safe top position --
-#     stop before anything binds or bottoms out.
-#  4. Read the P value on the controller screen.
-#  5. Subtract about 10 degrees for margin, put that number
-#     into LIFT_MAX_DEG.
-#  6. Re-run and confirm the lift stops on its own.
-#
-#  BANDING (matters more than any of this code at 1:1):
-#  With power off, the lift should roughly balance at mid
-#  height. If it slams down, add bands. If it flies up, remove
-#  some. Anchor bands near the bottom pivot, offset from the
-#  pivot point, so tension is highest at the bottom of travel.
-#
-#  Watch the temperature readout while driving. Past 40C in
-#  normal use means the bands are not carrying enough load.
-#
-#  TUNING THE HOLD:
-#  Band the arm first -- the hold loop is trim, not a crane.
-#  Then, with the arm at mid height, let go of both buttons:
-#    - sags slowly downward  -> raise HOLD_KP by 0.4
-#    - bounces or buzzes     -> raise HOLD_KD by 2, or drop
-#                               HOLD_KP by 0.4
-#    - drifts a degree or two and settles -> correct, leave it
-#  If it holds at mid height but sags with a block at full
-#  extension, raise HOLD_MAX_PCT before touching HOLD_KP.
-# ============================================================
+claw.set(
+    claw_on
+)
+
+competition = Competition(
+    user_control,
+    autonomous
+)
