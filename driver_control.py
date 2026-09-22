@@ -6,8 +6,9 @@
 #  Lift (DR4B): TWO motors, PORT10 left + PORT9 right (reversed)
 #               green cartridge, 1:1, mirrored gear train
 #  Intake     : PORT8, one motor drives intake + conveyor
-#  Claw       : two pneumatic pistons, three-wire ports A and B
-#               they always fire together as one grabber
+#  Claw       : two pneumatic pistons, two separate jobs
+#               port A = wrist, pivots the claw up and down
+#               port B = fingers, grab and release the pin
 #
 #  Controls:
 #    Left stick vertical  (axis3) - forward/backward
@@ -16,7 +17,8 @@
 #    L2 - lift down
 #    R1 - intake + conveyor in
 #    R2 - intake + conveyor out
-#    A  - claw grab / release (toggle)
+#    A  - claw fingers grab / release (toggle)
+#    Y  - claw wrist pivot up / down (toggle)
 #    B + DOWN - re-home the lift
 #    B + UP   - lift motor direction diagnostic
 # ============================================================
@@ -78,16 +80,18 @@ intake_conveyor = Motor(
 #  CLAW
 # ============================================================
 
-# Two pistons, one claw. They always fire together so we get
-# twice the squeeze on the pin -- that's the whole reason for
-# running two instead of one.
+# Two pistons doing two completely different jobs, so they get
+# two separate buttons. Never wire these together.
 #
-# Heads up: if we ever put these on two different mechanisms,
-# don't leave them wired together like this. Give each one its
-# own button, because the rules let us hold a pin and a cup at
-# once, and right now dropping one drops both.
-claw_a = DigitalOut(brain.three_wire_port.a)
-claw_b = DigitalOut(brain.three_wire_port.b)
+# Port A = the wrist. Pivots the whole claw up and down.
+# Port B = the fingers. Opens and closes on the pin.
+#
+# They have to stay independent because we need to pivot while
+# still holding a pin, and let go without the wrist moving. The
+# rules also let us carry a pin and a cup at the same time, so
+# losing one grip should never cost us the other.
+claw_pivot = DigitalOut(brain.three_wire_port.a)
+claw_grab  = DigitalOut(brain.three_wire_port.b)
 
 
 # ============================================================
@@ -101,27 +105,17 @@ DEADBAND = 5
 MECH_SPEED = 100
 
 # ---- Claw ----
-# What the pistons do when the program starts. False = open.
-# If the claw boots up clamped shut, just flip this to True --
-# it depends on which way the air lines are plugged into the
-# cylinders, and swapping the tubing is the other way to fix it.
-CLAW_START_ON = False
-
-# How our two solenoids are actually plumbed. Look at the robot
-# before you trust this, because the two setups need opposite
-# code and one of them can damage a cylinder.
+# Where both pistons sit when the program boots. We want a
+# known state every time, not wherever the air left them.
 #
-# False = two separate cylinders, both squeezing the same claw.
-#         Both get the same signal, so they move together.
-#         This is the normal way to do it and it's what we have
-#         unless somebody re-plumbed it.
+# Starting the wrist DOWN and the fingers OPEN is the safe
+# combo: nothing is sticking up to hit the 18" sizing box at
+# inspection, and we are ready to grab straight away.
 #
-# True  = one cylinder, with solenoid A as the push side and
-#         solenoid B as the pull side. Then they must always be
-#         OPPOSITE. Turning both on at once pressurizes both
-#         ends of the same cylinder, which just fights itself,
-#         stalls the claw, and wastes the whole air tank.
-CLAW_PUSH_PULL = False
+# If a piston boots the wrong way, flip its flag here. Swapping
+# the two air lines on that cylinder does the same thing.
+PIVOT_START_UP    = False
+GRAB_START_CLOSED = False
 
 # ---- Lift torque ----
 MAX_TORQUE_PCT = 100
@@ -177,8 +171,10 @@ on_stop = False
 lift_verdict = ""
 lift_press_moved = False
 
-claw_on = False
-claw_btn_prev = False
+pivot_up = False        # is the wrist raised
+grab_closed = False     # are the fingers clamped
+pivot_btn_prev = False  # Y last loop, so a hold counts as one press
+grab_btn_prev = False   # A last loop, same idea
 
 
 # ============================================================
@@ -1112,63 +1108,86 @@ def intake_control():
 #  CLAW CONTROL
 # ============================================================
 
-def claw_set(on):
+def claw_screen():
 
-    global claw_on
-
-    claw_on = on
-
-    # Fire both in the same loop. If you stagger them the claw
-    # goes on crooked and can pop the pin back out.
-    if CLAW_PUSH_PULL:
-
-        # One cylinder, two solenoids. B is always the opposite
-        # of A, never the same, or the two sides fight.
-        claw_a.set(on)
-        claw_b.set(not on)
-
+    # Both pistons on one line so the driver can see the whole
+    # claw at a glance without reading two separate messages.
+    if pivot_up:
+        a = "UP  "
     else:
+        a = "DOWN"
 
-        # Two cylinders on one claw, so they move as a pair.
-        claw_a.set(on)
-        claw_b.set(on)
+    if grab_closed:
+        b = "HOLD"
+    else:
+        b = "OPEN"
 
     controller.screen.set_cursor(
         2,
         1
     )
 
-    if on:
+    controller.screen.print(
+        "Wrist " + a + " Grip " + b
+    )
 
-        controller.screen.print(
-            "CLAW GRAB"
-        )
 
-    else:
+def pivot_set(up):
 
-        controller.screen.print(
-            "CLAW OPEN"
-        )
+    global pivot_up
+
+    pivot_up = up
+
+    claw_pivot.set(up)
+
+    claw_screen()
+
+
+def grab_set(closed):
+
+    global grab_closed
+
+    grab_closed = closed
+
+    claw_grab.set(closed)
+
+    claw_screen()
 
 
 def claw_control():
 
-    global claw_btn_prev
+    global pivot_btn_prev
+    global grab_btn_prev
 
-    pressed = (
-        controller.buttonA.pressing()
-    )
+    # Y = wrist up/down. A = fingers open/closed.
+    # Both are toggles: tap once, it stays put until you tap
+    # again. You do NOT have to hold the button to keep gripping,
+    # which matters because air only moves when the state
+    # changes -- holding a button would not use more air, but
+    # forgetting to hold one would drop the pin.
+    pivot_btn = controller.buttonY.pressing()
+    grab_btn = controller.buttonA.pressing()
 
     if (
-        pressed
-        and not claw_btn_prev
+        pivot_btn
+        and not pivot_btn_prev
     ):
 
-        claw_set(
-            not claw_on
+        pivot_set(
+            not pivot_up
         )
 
-    claw_btn_prev = pressed
+    if (
+        grab_btn
+        and not grab_btn_prev
+    ):
+
+        grab_set(
+            not grab_closed
+        )
+
+    pivot_btn_prev = pivot_btn
+    grab_btn_prev = grab_btn
 
 
 # ============================================================
@@ -1299,8 +1318,15 @@ def user_control():
     # CLAW INITIAL STATE
     # ==========================
 
-    claw_set(
-        claw_on
+    # Re-send both pistons at the start of driver control. The
+    # auton period may have left them anywhere, and this also
+    # puts the current state back on the controller screen.
+    pivot_set(
+        pivot_up
+    )
+
+    grab_set(
+        grab_closed
     )
 
 
@@ -1343,17 +1369,11 @@ def autonomous():
 # Put the claw in a known state as soon as the program loads,
 # before a match ever starts. Otherwise it sits wherever the
 # air pressure left it from last run.
-claw_on = CLAW_START_ON
+pivot_up = PIVOT_START_UP
+grab_closed = GRAB_START_CLOSED
 
-if CLAW_PUSH_PULL:
-
-    claw_a.set(claw_on)
-    claw_b.set(not claw_on)
-
-else:
-
-    claw_a.set(claw_on)
-    claw_b.set(claw_on)
+claw_pivot.set(pivot_up)
+claw_grab.set(grab_closed)
 
 competition = Competition(
     user_control,
