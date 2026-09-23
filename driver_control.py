@@ -1073,8 +1073,15 @@ def lift_control():
 # ============================================================
 #  INTAKE CONTROL
 #
-#  R1 = intake in
-#  R2 = intake out
+#  R1 = intake  (pulls a game piece in)
+#  R2 = outtake (spits it back out)
+#
+#  Note the motor directions look backwards here. On our build
+#  REVERSE is the direction that actually pulls inward, so R1
+#  gets REVERSE. The button labels are what matter -- R1 always
+#  means "take it in" no matter which way the motor has to turn
+#  to do that. If somebody flips the intake gearbox later, swap
+#  these two spin directions, not the buttons.
 # ============================================================
 
 def intake_control():
@@ -1084,7 +1091,7 @@ def intake_control():
     ):
 
         intake_conveyor.spin(
-            FORWARD,
+            REVERSE,
             MECH_SPEED,
             PERCENT
         )
@@ -1094,7 +1101,7 @@ def intake_control():
     ):
 
         intake_conveyor.spin(
-            REVERSE,
+            FORWARD,
             MECH_SPEED,
             PERCENT
         )
