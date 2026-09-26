@@ -186,6 +186,7 @@ HOME_LIFT_FIRST = True
 #       pushing at the top stop (LIFT_STALL_* below) and the brain
 #       shows "LIFT SHORT <reached> of <asked>" - use that number.
 SCORE_LIFT_DEG = 120.0
+LIFT_MAX_DEG = 550.0
 # FIXED: the lift never rose because it used spin_to_position at 60
 # percent. It now goes up on raw volts, like driver_control.py.
 LIFT_VOLTS = 12.0       # UP runs on raw volts; this arm needs all of it
@@ -963,7 +964,7 @@ def user_control():
         y_prev = y
         a_prev = a
 
-        if controller.buttonL1.pressing():
+        if controller.buttonL1.pressing() and lift_position() < LIFT_MAX_DEG:
             lift.spin(FORWARD, 50, PERCENT)
             lift_moving = True
         elif controller.buttonL2.pressing():
