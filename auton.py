@@ -33,7 +33,7 @@ import math
 brain = Brain()
 controller = Controller()
 
-BUILD = "v10 clean+marks"
+BUILD = "v18 turntrim"
 
 
 # ############################################################
@@ -48,15 +48,15 @@ BUILD = "v10 clean+marks"
 #  Things still WRONG or UNKNOWN, in the order to fix them.
 #  Search this file for  "FIX ME"  to jump to each one.
 #
-#    [ ] 1. SELFTEST = True, run it. See which parts work.
-#    [ ] 2. TRACK_WIDTH        - never measured. Sets the turn.
-#    [ ] 3. SCORE_LIFT_DEG     - placeholder 90. Goal is 3.25in.
+#    [x] 1. SELFTEST           - DONE, drive/turn/lift all work.
+#    [~] 2. TRACK_WIDTH        - trimmed to 11.86, re-check the turn.
+#    [x] 3. SCORE_LIFT_DEG     - DONE, measured 270.
 #    [ ] 4. CLAW_REACH_IN      - never measured. Bumper hits goal.
 #    [ ] 5. TOGGLE_SPIN_DIR    - unknown which way rolls it right.
-#    [ ] 6. DRIVE_GEAR_RATIO   - confirm 3.5 with MEASURE_MODE.
+#    [x] 6. DRIVE_GEAR_RATIO   - DONE, measured 2.137.
 #
 #  Already fixed, do not undo:
-#    DRIVE_GEAR_RATIO 0.391 -> 3.5   (turn was 10 deg not 65)
+#    DRIVE_GEAR_RATIO -> 2.137       (measured; turn was 10 not 65)
 #    lift now raises on raw volts    (it never rose before)
 #    TOGGLE_SPIN_PCT 60 -> 100       (intake was weak)
 # ============================================================
@@ -68,6 +68,16 @@ SELFTEST = False       # <<<<< FIX ME 1: SET True AND RUN THIS FIRST
 BRING_UP = False       # skip lift home + Toggle, drive immediately
 MEASURE_MODE = False   # do not drive; read the gear ratio by hand
 STEP_MODE = False      # one move per press of A
+
+# TURN_TEST: four 90 degree RIGHT turns and nothing else. The robot
+# should finish facing exactly where it started. Error compounds, so
+# a 5 percent error that is only 4 degrees on one turn shows up as 18
+# degrees after four - far easier to see by eye than one turn is.
+#
+# Square the robot on a tile seam first. Then:
+#     new TRACK_WIDTH = old * 360 / (360 + degrees it went PAST)
+# Overshoots (past the start) -> lower it. Stops short -> raise it.
+TURN_TEST = False
 STANDALONE = True      # run on the Run button, no Competition object
 
 MEASURE_DISTANCE_IN = 24.0   # how far you push it in MEASURE_MODE
@@ -99,18 +109,38 @@ WHEEL_CIRCUMFERENCE = 12.56  # 4 in wheel. A 3.25 in wheel is 10.21
 #       DIAMETER is this gap, and that circle is what turns
 #       "54 degrees" into inches of wheel travel.
 #
-#       Turned too little -> raise 0.5. Too much -> lower 0.5.
+#       TRIMMING IT. Run SELFTEST, watch "turn RIGHT 90", and
+#       measure what it actually turned. Then:
+#
+#            new TRACK_WIDTH = 14.5 * 90 / (degrees it really turned)
+#
+#       turned  80 -> 16.31     turned  95 -> 13.74
+#       turned  85 -> 15.35     turned 100 -> 13.05
+#       turned  90 -> 14.50     turned 105 -> 12.43
+#
+#       Under-turns -> RAISE it. Over-turns -> LOWER it.
+#
+#       If RIGHT and LEFT are off by DIFFERENT amounts, this
+#       constant will not fix that - both turns share it. That is
+#       one side slipping or dragging, and it is mechanical.
+#
 #       (Front to back is a different constant: see
 #        TURN_CENTER_FROM_BACK_IN below.)
-TRACK_WIDTH = 12.5           # SIDE TO SIDE, left wheel to right wheel
+TRACK_WIDTH = 10.6           # TRIMMED BY TEST, not by tape.
+                             # tape 14.5 -> over-turned ~110 -> 11.86
+                             # 11.86 -> still slightly over -> 11.25
+                             # 11.25 -> still over -> 10.6 (current)
+                             # still over? new = 10.6 * 90 / actual
 DRIVE_MOTOR_RPM = 200        # green cartridge
 
 # Motor turns per wheel turn. 3.5 = our 2:7 gearing, small gear on
-# the motor (24t -> 84t). Measured, not guessed: a commanded 65 deg
-# turn gave about 10 deg of real rotation, and only a true ratio near
-# 3.5 does that. Confirm with MEASURE_MODE.
-# <<<<< FIX ME 6: confirm with MEASURE_MODE. This was the bug behind
-#       your 10 degree turn - it was 0.391, off by 9x.
+# the motor (24t -> 84t). CONFIRMED: the selftest drives correctly
+# with this value.
+#
+# The push test once read 2.137, which is what you get from pushing
+# about 15 in instead of 24, or from the wheels slipping under your
+# hand. The tooth count won. Do not "fix" this from a push test
+# unless the selftest distances actually come out wrong.
 DRIVE_GEAR_RATIO = 3.5
 
 
@@ -144,6 +174,25 @@ DISC_ON_RIGHT = False
 MIRROR_TURNS = True     # True = blue RIGHT quadrant (or red LEFT)
 START_ANGLE_DEG = 45.0  # tilt on the wall. 0 = square
 DRIVE_OFF_WALL_IN = None  # None = worked out below. A number overrides.
+# Extra degrees on the ONE auton turn, on top of whatever the route
+# maths works out. Positive always means "turn further", whichever
+# way it is already going.
+#
+# WHICH KNOB TO USE:
+#   a commanded 90 in SELFTEST is not 90   -> TRACK_WIDTH, line 129
+#                                             (that one scales EVERY turn)
+#   90 is 90, but the auton still does not
+#   end up pointing at the goal            -> TURN_TRIM_DEG, here
+#                                             (only the auton turn)
+#
+# The second case means the geometry model is slightly off - the
+# robot does not start exactly where the maths assumes - and no
+# amount of TRACK_WIDTH fiddling fixes that without breaking the
+# turns that are already right.
+#
+# Turn short of the goal by ~5 deg? Put 5 here. Overshoots it? -5.
+TURN_TRIM_DEG = 0.0
+
 OVERSHOOT_IN = 0.0      # extra on the last leg, to trim where it lands
 BACK_AWAY_IN = 6.0      # pull off the goal at the end
 
@@ -161,11 +210,7 @@ TOGGLE_SPIN_DIR = REVERSE
 # ---------------- LIFT ----------------
 
 HOME_LIFT_FIRST = True
-# <<<<< FIX ME 3: PLACEHOLDER. 90 deg of a 1:1 arm is probably far
-#       more than needed - the Alliance Goal is only 3.25 in tall -
-#       and may be past the arm's travel. Read the real number off
-#       MEASURE_MODE: raise by hand until the pin clears the rim.
-SCORE_LIFT_DEG = 90.0
+SCORE_LIFT_DEG = 270.0       # MEASURED on the robot
 # FIXED: the lift never rose because it used spin_to_position at 60
 # percent. It now goes up on raw volts, like driver_control.py.
 LIFT_VOLTS = 12.0       # UP runs on raw volts; this arm needs all of it
@@ -290,6 +335,12 @@ while TURN_TO_GOAL_DEG > 180.0:
 while TURN_TO_GOAL_DEG < -180.0:
     TURN_TO_GOAL_DEG += 360.0
 
+# Hand trim, applied in whichever direction the turn already goes.
+if TURN_TO_GOAL_DEG < 0:
+    TURN_TO_GOAL_DEG -= TURN_TRIM_DEG
+else:
+    TURN_TO_GOAL_DEG += TURN_TRIM_DEG
+
 # Negative = driven in REVERSE, claw first.
 DRIVE_TO_GOAL_IN = -(_range - TURN_CENTER_FROM_BACK_IN
                      - CLAW_REACH_IN + OVERSHOOT_IN)
@@ -312,6 +363,7 @@ START_SPOT_BAD = (START_X_IN - ROBOT_WIDTH_IN / 2.0 <= WALL_GAP_LEFT_IN
 
 is_homed = False
 step_number = 0
+last_turn = ""   # result of the last turn, kept on screen
 bench_run = False
 
 
@@ -393,10 +445,13 @@ def status(text):
     controller.screen.set_cursor(1, 1)
     controller.screen.print("{:<18}".format(text))
 
-    # Redrawn every refresh. A one-off banner gets wiped by the
+    # Redrawn every refresh. A one-off print gets wiped by the
     # clear_screen above before anyone can read it.
     brain.screen.set_cursor(12, 1)
     brain.screen.print("BUILD " + BUILD + "   ")
+    if last_turn:
+        brain.screen.set_cursor(9, 1)
+        brain.screen.print(last_turn)
 
 
 def step(text):
@@ -415,8 +470,24 @@ def step(text):
         wait(20, MSEC)
 
 
+def time_left_ms():
+    # How much of the autonomous budget is left.
+    return AUTON_TIME_LIMIT_MS - brain.timer.time(MSEC)
+
+
 def pause(ms):
-    wait(ms, MSEC)
+    # Never wait past the whistle. Field control disables the robot at
+    # 15 s, so a wait that runs over does nothing except make the DONE
+    # time look bad - but it also eats budget the tail steps need.
+    budget(ms)
+
+
+def budget(ms):
+    # Wait, but never longer than the time we have left.
+    left = time_left_ms()
+    if left <= 0:
+        return
+    wait(min(ms, left), MSEC)
 
 
 def countdown(ms):
@@ -516,6 +587,22 @@ def turn_degrees(angle, speed=40, timeout_ms=None):
     left_drive.stop()
     right_drive.stop()
 
+    # What the ENCODERS think we turned, and whether the loop
+    # finished or timed out. Stored, not just printed, so status()
+    # can keep redrawing it - a one-off print is wiped by the next
+    # step's clear_screen before anyone can read it.
+    #
+    #   says 90, robot turned 80  -> TRACK_WIDTH wrong, trim it
+    #   says 60, robot turned 60  -> never finished: power or timeout
+    global last_turn
+    done = ((left_drive.position(DEGREES) * direction
+             + right_drive.position(DEGREES) * direction * -1) / 2.0
+            ) / per_robot_deg
+    last_turn = "turn ask {:.0f} enc {:.0f} {:<7}".format(
+        target_deg, done, "TIMEOUT" if elapsed >= timeout_ms else "ok")
+    brain.screen.set_cursor(9, 1)
+    brain.screen.print(last_turn)
+
 
 # ============================================================
 #  CLAW
@@ -523,22 +610,22 @@ def turn_degrees(angle, speed=40, timeout_ms=None):
 
 def wrist_up():
     claw_pivot.set(True)
-    wait(PNEUMATIC_SETTLE_MS, MSEC)
+    budget(PNEUMATIC_SETTLE_MS)
 
 
 def wrist_down():
     claw_pivot.set(False)
-    wait(PNEUMATIC_SETTLE_MS, MSEC)
+    budget(PNEUMATIC_SETTLE_MS)
 
 
 def grip_close():
     claw_grab.set(True)
-    wait(PNEUMATIC_SETTLE_MS, MSEC)
+    budget(PNEUMATIC_SETTLE_MS)
 
 
 def grip_open():
     claw_grab.set(False)
-    wait(PNEUMATIC_SETTLE_MS, MSEC)
+    budget(PNEUMATIC_SETTLE_MS)
 
 
 # ============================================================
@@ -712,6 +799,14 @@ def autonomous():
     pause(200)
 
     # Forward pulls us off the goal, since we reversed into it.
+    # Out of time: stop here rather than stepping through moves that
+    # cannot move anything anyway.
+    if out_of_time():
+        left_drive.stop()
+        right_drive.stop()
+        status("STOPPED {:.1f}s".format(brain.timer.time(MSEC) / 1000.0))
+        return
+
     step("clear goal {:.0f}in".format(BACK_AWAY_IN))
     drive_inches(BACK_AWAY_IN, 80)
     pause(100)
@@ -732,6 +827,24 @@ def autonomous():
 #  screen; whatever does not happen is the broken thing.
 # ============================================================
 
+def turn_test():
+    # Four right angles. Ends where it started if TRACK_WIDTH is right.
+    brain.timer.clear()
+    status("square it on a seam")
+    wait(3000, MSEC)
+    for i in range(4):
+        step("turn {} of 4".format(i + 1))
+        turn_degrees(90.0, 40)
+        pause(1200)
+    left_drive.stop()
+    right_drive.stop()
+    status("TURN TEST DONE")
+    brain.screen.set_cursor(6, 1)
+    brain.screen.print("past start -> LOWER TRACK_WIDTH")
+    brain.screen.set_cursor(7, 1)
+    brain.screen.print("short       -> RAISE it")
+
+
 def selftest():
     brain.timer.clear()
 
@@ -743,13 +856,15 @@ def selftest():
     drive_inches(-12.0, 60)
     pause(700)
 
+    # Long pauses here on purpose: measure the REAL angle against a
+    # tile seam while the screen still shows what the encoders think.
     step("turn RIGHT 90")
     turn_degrees(90.0, 40)
-    pause(700)
+    pause(4000)
 
     step("turn LEFT 90")
     turn_degrees(-90.0, 40)
-    pause(700)
+    pause(4000)
 
     step("lift UP")
     lift_to(SCORE_LIFT_DEG)
@@ -922,6 +1037,8 @@ def setup_problems():
         problems.append("Disc {:.1f}in off Toggle".format(DISC_GAP_IN))
     if not TURN_CLEARS_WALL:
         problems.append("Turn clips wall: raise DRIVE_OFF_WALL_IN")
+    if TURN_TEST:
+        problems.append("TURN_TEST on - not the route")
     if SELFTEST:
         problems.append("SELFTEST on - not the route")
     if BRING_UP:
@@ -962,7 +1079,9 @@ if MEASURE_MODE:
 elif STANDALONE:
     show_problems()
     countdown(BENCH_START_DELAY_MS)
-    if SELFTEST:
+    if TURN_TEST:
+        turn_test()
+    elif SELFTEST:
         selftest()
     else:
         autonomous()

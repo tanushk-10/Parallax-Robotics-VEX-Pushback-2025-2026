@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Auton path viewer</title>
+<style>
+  :root {
+    --ink:      #16181d;
+    --ink-2:    #5a6069;
+    --rule:     #d7dade;
+    --paper:    #ffffff;
+    --panel:    #f6f7f8;
+    --tile:     #c6c7ca;
+    --tile-2:   #bcbdc1;
+    --wall:     #2c2f36;
+    --red:      #c8202c;
+    --blue:     #1567cf;
+    --yellow:   #f2c500;
+    --path:     #e2610a;
+    --ok:       #1a7f46;
+    --warn:     #b4560c;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--paper); color: var(--ink);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 60px; }
+
+  header { border-bottom: 2px solid var(--ink); padding-bottom: 12px; margin-bottom: 22px; }
+  h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.01em; }
+  .sub { margin-top: 4px; color: var(--ink-2); font-size: 13px; }
+  .build {
+    float: right; font: 12px/1.6 ui-monospace, Consolas, "Courier New", monospace;
+    color: var(--ink-2); border: 1px solid var(--rule); border-radius: 3px;
+    padding: 1px 7px; background: var(--panel);
+  }
+
+  .cols { display: flex; gap: 26px; align-items: flex-start; }
+  .left { flex: 0 0 auto; }
+  .right { flex: 1 1 auto; min-width: 280px; }
+
+  canvas { display: block; border: 1px solid var(--rule); background: var(--paper); }
+
+  .controls { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+  button {
+    font: 500 13px/1 inherit; padding: 7px 14px; cursor: pointer;
+    border: 1px solid var(--ink); background: var(--ink); color: #fff; border-radius: 3px;
+  }
+  button.ghost { background: var(--paper); color: var(--ink); }
+  button:active { transform: translateY(1px); }
+  input[type=range] { flex: 1; accent-color: var(--path); }
+  .clock {
+    font: 13px/1 ui-monospace, Consolas, monospace; color: var(--ink-2);
+    min-width: 54px; text-align: right;
+  }
+
+  h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--ink-2); margin: 0 0 8px; font-weight: 650;
+  }
+  .block { margin-bottom: 22px; }
+
+  ol.steps { list-style: none; margin: 0; padding: 0;
+             font: 12.5px/1 ui-monospace, Consolas, monospace; }
+  ol.steps li {
+    display: flex; gap: 10px; padding: 6px 8px; border-left: 2px solid transparent;
+    color: var(--ink-2);
+  }
+  ol.steps li .n { width: 14px; text-align: right; opacity: .55; }
+  ol.steps li .d { margin-left: auto; opacity: .6; }
+  ol.steps li.on {
+    background: #fff5ec; border-left-color: var(--path); color: var(--ink); font-weight: 600;
+  }
+  ol.steps li.done { color: #9aa0a8; }
+
+  table.nums { width: 100%; border-collapse: collapse;
+               font: 12.5px/1 ui-monospace, Consolas, monospace; }
+  table.nums td { padding: 5px 0; border-bottom: 1px solid var(--rule); }
+  table.nums td:last-child { text-align: right; }
+  table.nums tr:last-child td { border-bottom: none; }
+  .k { color: var(--ink-2); }
+
+  .flag { padding: 8px 10px; border-radius: 3px; font-size: 12.5px; margin-bottom: 6px; }
+  .flag.bad  { background: #fdf3ea; border-left: 3px solid var(--warn); color: #6b3708; }
+  .flag.good { background: #eef7f1; border-left: 3px solid var(--ok); color: #145c33; }
+
+  footer { margin-top: 26px; padding-top: 12px; border-top: 1px solid var(--rule);
+           color: var(--ink-2); font-size: 12px; }
+  code { font: 12px ui-monospace, Consolas, monospace; background: var(--panel);
+         padding: 1px 4px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <span class="build" id="build"></span>
+  <h1>Auton path &mdash; blue RIGHT quadrant</h1>
+  <div class="sub">Generated from <code>auton.py</code>. Field geometry from Game Manual v1.0, Appendix A sheets A10 and A12.</div>
+</header>
+
+<div class="cols">
+  <div class="left">
+    <canvas id="field" width="620" height="620"></canvas>
+    <div class="controls">
+      <button id="play">Play</button>
+      <button id="reset" class="ghost">Reset</button>
+      <input type="range" id="scrub" min="0" max="1000" value="0">
+      <span class="clock" id="clock">0.00 s</span>
+    </div>
+  </div>
+
+  <div class="right">
+    <div class="block">
+      <h2>Sequence</h2>
+      <ol class="steps" id="steps"></ol>
+    </div>
+
+    <div class="block">
+      <h2>Route</h2>
+      <table class="nums" id="route"></table>
+    </div>
+
+    <div class="block">
+      <h2>Checks</h2>
+      <div id="flags"></div>
+    </div>
+  </div>
+</div>
+
+<footer id="foot"></footer>
+
+</div>
+
+<script>
+window.onerror = function (msg, src, line, col) {
+  document.body.insertAdjacentHTML("afterbegin",
+    '<pre style="margin:0;padding:14px;background:#fdf3ea;border-bottom:3px solid #b4560c;' +
+    'font:12px ui-monospace,Consolas,monospace;color:#6b3708;white-space:pre-wrap">' +
+    'Script error on line ' + line + ':
+' + msg + '</pre>');
+  return false;
+};
+// ---------------------------------------------------------------
+// Values below are read out of auton.py. If you change a setting
+// there, re-run  tools/make_viewer.py  to refresh this file.
+// ---------------------------------------------------------------
+const R = {
+  build:      "v17 tw10.6 RUN",
+  field:      140.41,
+  robotLen:   18.0,
+  robotWid:   18.0,
+  pivotBack:  9.0,          // back bumper to drive centre
+  startAngle: 45.0,
+  startOut:   12.7279,      // drive centre off the wall at the start
+  legOne:     8.0,
+  turn:       -54.1915,
+  reverse:    20.5817,
+  clearGoal:  6.0,
+  toggleMs:   1200,
+  liftDeg:    270.0,
+  gearRatio:  3.5,
+  trackWidth: 10.6,
+  wheelCirc:  12.56,
+  motorRpm:   200,
+  clawReach:  0.0,
+  goalBase:   5.61,
+  wallGap:    [51.40, 89.01],
+  bumperHitsGoal: true,
+  discAtWall: true,
+};
+
+// Field coords: x right, y up, origin at the audience-left/bottom
+// corner, matching sheet A10. Our wall is the RIGHT one (x = 140.41),
+// our Toggle at its midpoint.
+const F = R.field, MID = F / 2;
+const GOALS = [
+  [46.66,  23.11, "red"],   [93.75,  23.11, "black"],
+  [23.11,  46.66, "red"],   [117.30, 46.66, "black"],
+  [70.20,  70.20, "tall"],
+  [23.11,  93.75, "black"], [117.30, 93.75, "blue"],
+  [46.66, 117.30, "black"], [93.75, 117.30, "blue"],
+];
+// cup / pin / cup groups sit against every wall (sheet A12)
+const WALL_OBJ = [43.50, 46.66, 49.82, 90.59, 93.75, 96.91];
+
+// Local frame -> field. We face INTO the field from the right wall,
+// so "out" runs -x and "lat" (our right) runs +y.
+const toField = (out, lat) => [F - out, MID + lat];
+const headVec = h => { const r = h * Math.PI / 180;
+                       return [-Math.cos(r), Math.sin(r)]; };
+
+// ---- build the timeline -----------------------------------------
+const speed = pct => R.motorRpm * pct / 100 / R.gearRatio * R.wheelCirc / 60;
+const h0 = -R.startAngle;              // mirrored quadrant
+const h1 = h0 + R.turn;
+
+const phases = [];
+let t = 0;
+function add(label, dur, kind, data) {
+  phases.push({ label, t0: t, t1: t + dur, kind, ...data });
+  t += dur;
+}
+add("spin toggle",        R.toggleMs / 1000,           "hold",  { toggle: true });
+add("off wall 8.0in",     R.legOne / speed(80),        "drive", { dist:  R.legOne, head: h0 });
+add("turn -54deg",        Math.abs(R.turn) * Math.PI * R.trackWidth / 360 / speed(50), "turn", {});
+add("raise to 270deg",    0.9,                         "hold",  { lift: true });
+add("reverse 20.6in",     R.reverse / speed(70),       "drive", { dist: -R.reverse, head: h1 });
+add("wrist over goal",    0.35,                        "hold",  { wrist: true });
+add("release pin",        0.35,                        "hold",  { release: true });
+add("clear goal 6in",     R.clearGoal / speed(80),     "drive", { dist: R.clearGoal, head: h1 });
+const TOTAL = t;
+
+// pose at time tt -> {out, lat, head, lifted, gripped, wristUp}
+function poseAt(tt) {
+  let out = R.startOut, lat = 0, head = h0;
+  let lifted = false, wristUp = false, gripped = true, toggleOn = false;
+  for (const p of phases) {
+    const done = tt >= p.t1;
+    const frac = done ? 1 : Math.max(0, (tt - p.t0) / (p.t1 - p.t0));
+    if (frac <= 0) break;
+    if (p.kind === "drive") {
+      const [fo, fl] = [Math.cos(head * Math.PI / 180), Math.sin(head * Math.PI / 180)];
+      out += fo * p.dist * frac;  lat += fl * p.dist * frac;
+    } else if (p.kind === "turn") {
+      head = h0 + R.turn * frac;
+    } else {
+      if (p.toggle)  toggleOn = frac < 1;
+      if (p.lift)    lifted   = frac > 0.15;
+      if (p.wrist)   wristUp  = frac > 0.3;
+      if (p.release) gripped  = frac < 0.5;
+    }
+    if (!done) break;
+    if (p.lift)    lifted = true;
+    if (p.wrist)   wristUp = true;
+    if (p.release) gripped = false;
+  }
+  return { out, lat, head, lifted, wristUp, gripped, toggleOn };
+}
+
+// ---- drawing ----------------------------------------------------
+const cv = document.getElementById("field"), cx = cv.getContext("2d");
+const PAD = 26, S = (cv.width - PAD * 2) / F;
+const px = (x, y) => [PAD + x * S, PAD + (F - y) * S];
+
+function drawField() {
+  cx.clearRect(0, 0, cv.width, cv.height);
+
+  // tiles
+  cx.fillStyle = getCss("--tile");
+  const [ox, oy] = px(0, F);
+  cx.fillRect(ox, oy, F * S, F * S);
+  cx.strokeStyle = getCss("--tile-2"); cx.lineWidth = 1;
+  for (let i = 1; i < 6; i++) {
+    const v = F * i / 6;
+    line(px(v, 0), px(v, F)); line(px(0, v), px(F, v));
+  }
+
+  // white tape: one diagonal is the Autonomous Line (drawn double)
+  cx.strokeStyle = "#fff"; cx.lineWidth = 3.2;
+  line(px(0, 0), px(F, F));
+  cx.lineWidth = 2.6;
+  line(px(1.6, F), px(F, 1.6)); line(px(0, F - 1.6), px(F - 1.6, 0));
+  // midfield diamond
+  const hd = 34.05 / Math.SQRT2;
+  cx.lineWidth = 2.6; cx.beginPath();
+  const dm = [[MID, MID - hd], [MID + hd, MID], [MID, MID + hd], [MID - hd, MID]];
+  dm.forEach(([x, y], i) => { const p = px(x, y); i ? cx.lineTo(...p) : cx.moveTo(...p); });
+  cx.closePath(); cx.stroke();
+
+  // perimeter
+  cx.strokeStyle = getCss("--wall"); cx.lineWidth = 4;
+  cx.strokeRect(ox, oy, F * S, F * S);
+
+  // toggles, centred on each wall, 25.99 long
+  cx.fillStyle = getCss("--yellow");
+  bar(MID - 13, -1.4, MID + 13, 1.4); bar(MID - 13, F - 1.4, MID + 13, F + 1.4);
+  bar(-1.4, MID - 13, 1.4, MID + 13); bar(F - 1.4, MID - 13, F + 1.4, MID + 13);
+
+  // wall objects
+  WALL_OBJ.forEach(v => {
+    dot(v, 1.58, 1.58, "#f4f4f5"); dot(v, F - 1.58, 1.58, "#f4f4f5");
+    dot(1.58, v, 1.58, "#f4f4f5"); dot(F - 1.58, v, 1.58, "#f4f4f5");
+  });
+
+  // goals
+  GOALS.forEach(([x, y, kind]) => {
+    const col = kind === "red" ? getCss("--red")
+              : kind === "blue" ? getCss("--blue") : "#1b1d21";
+    dot(x, y, kind === "tall" ? 3.2 : 2.805, col);
+  });
+
+  // our goal, called out
+  const g = px(117.30, 93.75);
+  cx.strokeStyle = getCss("--path"); cx.lineWidth = 1.6;
+  cx.beginPath(); cx.arc(g[0], g[1], 4.6 * S, 0, 7); cx.stroke();
+  label(117.30 - 20, 93.75 + 8.5, "our goal 117.30, 93.75", getCss("--path"));
+}
+
+function drawPath(upto) {
+  cx.strokeStyle = getCss("--path"); cx.lineWidth = 2;
+  cx.setLineDash([5, 4]); cx.beginPath();
+  let first = true;
+  for (let s = 0; s <= upto + 0.001; s += TOTAL / 240) {
+    const p = poseAt(s), [fx, fy] = toField(p.out, p.lat), q = px(fx, fy);
+    first ? (cx.moveTo(...q), first = false) : cx.lineTo(...q);
+  }
+  cx.stroke(); cx.setLineDash([]);
+}
+
+function drawRobot(p) {
+  const [fx, fy] = toField(p.out, p.lat), c = px(fx, fy);
+  const [ho, hl] = headVec(p.head);
+  const fwd = [ho * S, -hl * S];                 // canvas y is flipped
+  const rgt = [fwd[1], -fwd[0]];
+  const h = R.robotLen / 2;
+  const corner = (a, b) => [c[0] + (fwd[0] * a + rgt[0] * b) * h,
+                            c[1] + (fwd[1] * a + rgt[1] * b) * h];
+
+  cx.beginPath();
+  [[1,-1],[1,1],[-1,1],[-1,-1]].forEach(([a,b], i) => {
+    const q = corner(a, b); i ? cx.lineTo(...q) : cx.moveTo(...q);
+  });
+  cx.closePath();
+  cx.fillStyle = "rgba(32,36,44,.92)"; cx.fill();
+  cx.strokeStyle = "#0d0f12"; cx.lineWidth = 1.6; cx.stroke();
+
+  // back edge = claw + disc end, drawn heavier
+  cx.beginPath();
+  cx.moveTo(...corner(-1, -1)); cx.lineTo(...corner(-1, 1));
+  cx.strokeStyle = p.gripped ? getCss("--yellow") : "#6d727a";
+  cx.lineWidth = 4; cx.stroke();
+
+  // the pin, while we still hold it
+  if (p.gripped) {
+    const b = [c[0] - fwd[0] * h, c[1] - fwd[1] * h];
+    cx.beginPath(); cx.arc(b[0], b[1], 1.5 * S, 0, 7);
+    cx.fillStyle = getCss("--yellow"); cx.fill();
+    cx.strokeStyle = "#8a7000"; cx.lineWidth = 1; cx.stroke();
+  }
+
+  // front marker, so orientation is never ambiguous
+  const f = [c[0] + fwd[0] * h * 0.62, c[1] + fwd[1] * h * 0.62];
+  cx.beginPath(); cx.arc(f[0], f[1], 2.4, 0, 7);
+  cx.fillStyle = "#e8eaec"; cx.fill();
+}
+
+// small helpers
+function getCss(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function line(a, b) { cx.beginPath(); cx.moveTo(...a); cx.lineTo(...b); cx.stroke(); }
+function bar(x0, y0, x1, y1) { const a = px(x0, y1), b = px(x1, y0);
+  cx.fillRect(a[0], a[1], b[0] - a[0], b[1] - a[1]);
+  cx.strokeStyle = "#2c2f36"; cx.lineWidth = .8;
+  cx.strokeRect(a[0], a[1], b[0] - a[0], b[1] - a[1]); }
+function dot(x, y, r, fill) { const p = px(x, y);
+  cx.beginPath(); cx.arc(p[0], p[1], r * S, 0, 7);
+  cx.fillStyle = fill; cx.fill();
+  cx.strokeStyle = "#2c2f36"; cx.lineWidth = 1; cx.stroke(); }
+function label(x, y, text, col) { const p = px(x, y);
+  cx.fillStyle = col; cx.font = "600 11px ui-monospace, Consolas, monospace";
+  cx.fillText(text, p[0], p[1]); }
+
+// ---- ui ---------------------------------------------------------
+let now = 0, playing = false, last = 0;
+
+function render() {
+  drawField();
+  drawPath(now);
+  const p = poseAt(now);
+  drawRobot(p);
+
+  document.getElementById("clock").textContent = now.toFixed(2) + " s";
+  document.getElementById("scrub").value = Math.round(now / TOTAL * 1000);
+
+  const li = document.querySelectorAll("#steps li");
+  phases.forEach((ph, i) => {
+    li[i].className = now >= ph.t1 ? "done" : (now >= ph.t0 ? "on" : "");
+  });
+}
+
+function tick(ts) {
+  if (playing) {
+    if (last) now = Math.min(TOTAL, now + (ts - last) / 1000);
+    last = ts;
+    if (now >= TOTAL) { playing = false; document.getElementById("play").textContent = "Play"; }
+    render();
+  } else last = 0;
+  requestAnimationFrame(tick);
+}
+
+document.getElementById("play").onclick = e => {
+  if (now >= TOTAL) now = 0;
+  playing = !playing; last = 0;
+  e.target.textContent = playing ? "Pause" : "Play";
+};
+document.getElementById("reset").onclick = () => {
+  now = 0; playing = false;
+  document.getElementById("play").textContent = "Play"; render();
+};
+document.getElementById("scrub").oninput = e => {
+  playing = false; document.getElementById("play").textContent = "Play";
+  now = e.target.value / 1000 * TOTAL; render();
+};
+
+// populate the side panels
+document.getElementById("build").textContent = R.build;
+document.getElementById("steps").innerHTML = phases.map((p, i) =>
+  `<li><span class="n">${i + 1}</span><span>${p.label}</span>` +
+  `<span class="d">${p.t1.toFixed(1)}s</span></li>`).join("");
+
+const rows = [
+  ["start tilt",     R.startAngle.toFixed(0) + "°"],
+  ["leg 1 forward",  R.legOne.toFixed(2) + " in"],
+  ["turn",           R.turn.toFixed(1) + "°"],
+  ["reverse",        R.reverse.toFixed(2) + " in"],
+  ["clear goal",     R.clearGoal.toFixed(1) + " in"],
+  ["total time",     TOTAL.toFixed(1) + " s"],
+  ["gear ratio",     R.gearRatio.toFixed(3)],
+  ["track width",    R.trackWidth.toFixed(2) + " in"],
+  ["claw reach",     R.clawReach.toFixed(2) + " in"],
+];
+document.getElementById("route").innerHTML = rows.map(([k, v]) =>
+  `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join("");
+
+const flags = [];
+flags.push(R.discAtWall
+  ? `<div class="flag good">Disc reaches the Toggle at this tilt.</div>`
+  : `<div class="flag bad">Disc does not reach the Toggle.</div>`);
+if (R.bumperHitsGoal) flags.push(
+  `<div class="flag bad">CLAW_REACH_IN is ${R.clawReach.toFixed(1)} in. ` +
+  `The goal base is ${R.goalBase} in across, so the bumper reaches it ` +
+  `${(R.goalBase / 2 - R.clawReach).toFixed(2)} in before the pin does &mdash; ` +
+  `it will shove the goal. Needs ${(R.goalBase / 2).toFixed(2)} in or more.</div>`);
+document.getElementById("flags").innerHTML = flags.join("");
+
+document.getElementById("foot").innerHTML =
+  `Dashed line is the drive-centre path. The heavy edge on the robot is the back &mdash; ` +
+  `lift, claw and Toggle disc. Yellow dot is the preload pin, and it disappears when the grip opens. ` +
+  `Total ${TOTAL.toFixed(1)} s against a 14.5 s limit.`;
+
+render();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
