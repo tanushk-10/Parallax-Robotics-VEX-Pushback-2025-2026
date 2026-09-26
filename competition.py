@@ -127,7 +127,7 @@ MAX_TORQUE_PCT = 100
 
 # ---- Lift upper limit ----
 USE_MAX_LIMIT = False
-LIFT_MAX_DEG = 750
+LIFT_MAX_DEG = 675
 
 # ---- Lift drive ----
 UP_VOLTS = 12.0
@@ -293,7 +293,7 @@ TOGGLE_SPIN_DIR = REVERSE
 # ---------------- LIFT ----------------
 
 HOME_LIFT_FIRST = True
-SCORE_LIFT_DEG = 270.0       # MEASURED on the robot
+SCORE_LIFT_DEG = 550.0       # MEASURED on the robot
 # FIXED: the lift never rose because it used spin_to_position at 60
 # percent. It now goes up on raw volts, like driver_control.py.
 LIFT_VOLTS = 12.0       # UP runs on raw volts; this arm needs all of it
