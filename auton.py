@@ -1,90 +1,209 @@
 # ============================================================
-#  AUTONOMOUS - 1 PIN SCORING ROUTINE
-#  VEX V5RC Override (2026-2027)  |  VEXcode V5 Python
+#  AUTON  -  VEX V5RC Override  -  VEXcode V5 Python
 #
-#  What this does, in plain terms:
-#    We start with a pin already clamped in the claw. We drive
-#    off the wall, turn toward our goal, drive up to it, lift,
-#    flick the wrist over the goal, let go, and back off.
+#  Preloaded pin, scored in our Alliance Goal, plus the Toggle.
+#  Our lift, claw and Toggle disc are all on the BACK of the robot,
+#  so the back does all the work: at the Toggle first, then at the
+#  goal. We never turn around.
 #
-#  Why a preloaded pin: picking a pin up off the floor in 15
-#  seconds is the most likely thing to fail. Starting with it
-#  in our hand removes that whole problem, and a pin that
-#  scores every match beats a two pin auton that works half
-#  the time.
+#  WHERE TO PUT THE ROBOT
+#    Blue, RIGHT quadrant. Against the right-hand wall, under that
+#    wall's Toggle, rotated 45 degrees so the back-LEFT corner (the
+#    one the disc is on) touches the wall. Pin in the claw, intake
+#    empty, nothing touching the Toggle.
 #
-#  ---- RULES THIS ROUTINE IS BUILT AROUND ----
-#  All quoted from the Override Game Manual, Version 1.0,
-#  released July 2, 2026. Check these against the current
-#  manual before a competition - the numbering in the table of
-#  contents is off by one from the numbering in the rule body,
-#  and the numbers below are the BODY ones.
+#  HOW TO RUN IT
+#    Press Run. Two second countdown, then it goes. No field control
+#    needed, no button. That is STANDALONE below.
 #
-#  <SG5> "Each Robot gets one Pin as a Preload." Red Alliance
-#  preloads are red/yellow Pins, blue Alliance preloads are
-#  blue/yellow Pins. So our one preloaded pin is legal. One is
-#  also the maximum - we cannot start with two.
+#  WHICH MODE
+#    SELFTEST  - test each subsystem one at a time (start here)
+#    BRING_UP  - skip lift homing and Toggle, go straight to driving
+#    MEASURE   - do not drive; push the robot to read the gear ratio
+#    STEP_MODE - one move per press of A, for tape measuring
+#    none of them - run the real routine
 #
-#  <SG1> Starting a Match. We must start:
-#    - no bigger than 18 x 18 x 18 inches
-#    - touching at most that one preload, no other pins or cups
-#    - not touching Goals, Loaders, Load Zones or Toggles
-#    - not sharing a Quadrant with our alliance partner
-#    - completely stationary, nothing moving
-#    - touching the field tiles AND the Field Perimeter, on our
-#      own side of the Autonomous Line
-#  That last one is why the routine starts by driving off the
-#  wall: the rules put us against the wall to begin with.
-#
-#  <SG7> During autonomous we may NOT contact tiles, scoring
-#  objects or field elements on the opponent's side of the
-#  Autonomous Line. The Autonomous Line is a pair of white tape
-#  lines running DIAGONALLY across the field, around the
-#  Midfield. Crossing it hands the Autonomous Bonus straight to
-#  the other alliance, so keep the route short and inside our
-#  own Quadrant.
-#
-#  <SG6> Possession is capped at one Pin and one Cup at a time.
-#
-#  Scoring: each Scored red or blue Pin is 5 points, each
-#  Scored yellow Pin is 10 points, each Robot in the Midfield
-#  is 8 points. A pin has two halves, and each visible half
-#  scores on its own - so our red/yellow preload can score the
-#  red half for us plus the yellow half if we own that
-#  Quadrant's Toggle.
-#
-#  <SC8> The Autonomous Win Point needs SEVEN pins scored,
-#  three goals holding two pins each, and neither robot
-#  touching the Field Perimeter. A one pin auton cannot get it.
-#  This routine plays for the Autonomous Bonus instead, which
-#  just means outscoring the other alliance in those 15 s.
-#
-#  PORTS (must match driver_control.py exactly)
-#    Drive  : PORT11/12 left, PORT13/14 right
-#    Lift   : PORT10 left, PORT9 right
-#    Intake : PORT8
-#    Claw   : three-wire A = wrist pivot, B = grip
-#
-#  There is NO inertial sensor on this robot, so every turn is
-#  measured off the drive encoders. Turns drift if a wheel
-#  slips, so keep them few and keep them slow.
-#
-#  THREE MODES, set them right below:
-#    MEASURE_MODE - find DRIVE_GEAR_RATIO by pushing the robot
-#    STEP_MODE    - run one move at a time, press A to continue
-#    normal       - run the whole routine on the 15 s clock
-#
-#  READ THE SETUP NOTES AT THE BOTTOM BEFORE THE FIRST RUN.
+#  EVERYTHING YOU EDIT IS IN THE SETTINGS BLOCK BELOW.
+#  Below that is implementation. Reference notes are at the bottom.
 # ============================================================
 
 from vex import *
+import math
 
 brain = Brain()
 controller = Controller()
 
+BUILD = "v10 clean+marks"
+
+
+# ############################################################
+# #                                                          #
+# #                      S E T T I N G S                     #
+# #                                                          #
+# ############################################################
 
 # ============================================================
-#  DEVICES  -  keep identical to driver_control.py
+#  >>>  START HERE  <<<
+#
+#  Things still WRONG or UNKNOWN, in the order to fix them.
+#  Search this file for  "FIX ME"  to jump to each one.
+#
+#    [ ] 1. SELFTEST = True, run it. See which parts work.
+#    [ ] 2. TRACK_WIDTH        - never measured. Sets the turn.
+#    [ ] 3. SCORE_LIFT_DEG     - placeholder 90. Goal is 3.25in.
+#    [ ] 4. CLAW_REACH_IN      - never measured. Bumper hits goal.
+#    [ ] 5. TOGGLE_SPIN_DIR    - unknown which way rolls it right.
+#    [ ] 6. DRIVE_GEAR_RATIO   - confirm 3.5 with MEASURE_MODE.
+#
+#  Already fixed, do not undo:
+#    DRIVE_GEAR_RATIO 0.391 -> 3.5   (turn was 10 deg not 65)
+#    lift now raises on raw volts    (it never rose before)
+#    TOGGLE_SPIN_PCT 60 -> 100       (intake was weak)
+# ============================================================
+
+# ---------------- MODES ----------------
+
+SELFTEST = False       # <<<<< FIX ME 1: SET True AND RUN THIS FIRST
+                       #       tests every subsystem one at a time
+BRING_UP = False       # skip lift home + Toggle, drive immediately
+MEASURE_MODE = False   # do not drive; read the gear ratio by hand
+STEP_MODE = False      # one move per press of A
+STANDALONE = True      # run on the Run button, no Competition object
+
+MEASURE_DISTANCE_IN = 24.0   # how far you push it in MEASURE_MODE
+BENCH_START_DELAY_MS = 2000  # countdown before it moves
+START_DELAY_MS = 0           # extra delay inside the routine; 0 at a comp
+
+
+# ---------------- DRIVETRAIN ----------------
+
+WHEEL_CIRCUMFERENCE = 12.56  # 4 in wheel. A 3.25 in wheel is 10.21
+# <<<<< FIX ME 2: NEVER MEASURED. Decides whether a 54 degree turn
+#       is really 54.
+#
+#       SIDE TO SIDE, across the robot - NOT front to back:
+#
+#             FRONT (intake)
+#          +-----------------+
+#         (L)               (R)
+#         (L)               (R)
+#          +-----------------+
+#             BACK (lift, claw, disc)
+#          |<-- TRACK_WIDTH -->|
+#
+#       Centre of the left tread to centre of the right tread,
+#       perpendicular to the way the robot drives. Four wheels:
+#       either pair, same number.
+#
+#       Pivoting in place, the wheels trace a circle whose
+#       DIAMETER is this gap, and that circle is what turns
+#       "54 degrees" into inches of wheel travel.
+#
+#       Turned too little -> raise 0.5. Too much -> lower 0.5.
+#       (Front to back is a different constant: see
+#        TURN_CENTER_FROM_BACK_IN below.)
+TRACK_WIDTH = 12.5           # SIDE TO SIDE, left wheel to right wheel
+DRIVE_MOTOR_RPM = 200        # green cartridge
+
+# Motor turns per wheel turn. 3.5 = our 2:7 gearing, small gear on
+# the motor (24t -> 84t). Measured, not guessed: a commanded 65 deg
+# turn gave about 10 deg of real rotation, and only a true ratio near
+# 3.5 does that. Confirm with MEASURE_MODE.
+# <<<<< FIX ME 6: confirm with MEASURE_MODE. This was the bug behind
+#       your 10 degree turn - it was 0.391, off by 9x.
+DRIVE_GEAR_RATIO = 3.5
+
+
+# ---------------- OUR ROBOT ----------------
+
+ROBOT_LENGTH_IN = 18.0   # back bumper to front face
+ROBOT_WIDTH_IN = 18.0    # side to side
+
+# Back bumper to the point it pivots around (middle of the drive
+# wheels). Half the length on most drivetrains.
+TURN_CENTER_FROM_BACK_IN = ROBOT_LENGTH_IN / 2.0
+
+# How far PAST the back bumper the held pin sits, with the lift up
+# and the wrist over. 0 = inside our footprint. MEASURE THIS: under
+# 2.8 the bumper hits the goal base instead of the pin going in.
+# <<<<< FIX ME 4: NEVER MEASURED. At 0.0 the brain warns the bumper
+#       hits the goal base instead of the pin going in.
+CLAW_REACH_IN = 0.0
+
+# Pin off the centre line, looking forward. + is right, - is left.
+CLAW_SIDE_OFFSET_IN = 0.0
+
+# Which side of the BACK the Toggle disc is on, looking FORWARD from
+# inside the robot. Ours is LEFT. A tilted robot touches the wall
+# with one back corner only, and the disc must be on that corner.
+DISC_ON_RIGHT = False
+
+
+# ---------------- THE ROUTE ----------------
+
+MIRROR_TURNS = True     # True = blue RIGHT quadrant (or red LEFT)
+START_ANGLE_DEG = 45.0  # tilt on the wall. 0 = square
+DRIVE_OFF_WALL_IN = None  # None = worked out below. A number overrides.
+OVERSHOOT_IN = 0.0      # extra on the last leg, to trim where it lands
+BACK_AWAY_IN = 6.0      # pull off the goal at the end
+
+
+# ---------------- TOGGLE ----------------
+
+SPIN_TOGGLE_FIRST = True
+TOGGLE_SPIN_MS = 1200
+TOGGLE_SPIN_PCT = 100       # FIXED: was 60, you asked for stronger
+# <<<<< FIX ME 5: nobody has checked which way rolls the Toggle to
+#       our colour. Wrong way -> change to FORWARD.
+TOGGLE_SPIN_DIR = REVERSE
+
+
+# ---------------- LIFT ----------------
+
+HOME_LIFT_FIRST = True
+# <<<<< FIX ME 3: PLACEHOLDER. 90 deg of a 1:1 arm is probably far
+#       more than needed - the Alliance Goal is only 3.25 in tall -
+#       and may be past the arm's travel. Read the real number off
+#       MEASURE_MODE: raise by hand until the pin clears the rim.
+SCORE_LIFT_DEG = 90.0
+# FIXED: the lift never rose because it used spin_to_position at 60
+# percent. It now goes up on raw volts, like driver_control.py.
+LIFT_VOLTS = 12.0       # UP runs on raw volts; this arm needs all of it
+LIFT_DOWN_PCT = 35      # DOWN is gentle; gravity does the work
+LIFT_TOL_DEG = 5
+LIFT_TIMEOUT_MS = 2500
+
+
+# ---------------- CLAW ----------------
+
+PRELOAD_PIN = True         # grip closed at boot, on the preloaded pin
+PNEUMATIC_SETTLE_MS = 300  # air takes a moment to move the piston
+
+
+# ---------------- DRIVE TUNING ----------------
+
+KP_DRIVE_PER_IN = 5.0      # percent power per inch still to go
+KP_STRAIGHT_PER_IN = 4.0   # percent per inch one side leads the other
+KP_TURN_PER_DEG = 1.2      # percent power per degree of heading error
+MIN_DRIVE_PCT = 8          # floor, or it parks just short of target
+DRIVE_TOL_IN = 0.5         # close enough on distance
+TURN_TOL_DEG = 2.0         # close enough on turns
+SETTLE_SPEED_IN_S = 1.0    # "stopped" = wheels slower than this
+SETTLE_MS = 100            # ...while close, for this long
+MOVE_TIMEOUT_FACTOR = 2.5  # times the ideal duration, before giving up
+
+AUTON_TIME_LIMIT_MS = 14500  # hard stop. Never raise past 15000.
+
+
+# ############################################################
+# #                 END OF SETTINGS                          #
+# #   Below here is implementation. Field numbers come from   #
+# #   the Game Manual drawings and should not need editing.   #
+# ############################################################
+
+
+# ============================================================
+#  DEVICES  -  ports must match driver_control.py
 # ============================================================
 
 left_motor_a = Motor(Ports.PORT11, GearSetting.RATIO_18_1, True)
@@ -99,165 +218,92 @@ lift_left = Motor(Ports.PORT10, GearSetting.RATIO_18_1, False)
 lift_right = Motor(Ports.PORT9, GearSetting.RATIO_18_1, True)
 lift = MotorGroup(lift_left, lift_right)
 
+# The Toggle disc is chain driven off the SAME motor as the intake,
+# so this one motor turns both.
 intake_conveyor = Motor(Ports.PORT8, GearSetting.RATIO_18_1, False)
 
-claw_pivot = DigitalOut(brain.three_wire_port.a)   # wrist, up and down
-claw_grab = DigitalOut(brain.three_wire_port.b)    # fingers, grip and release
+claw_pivot = DigitalOut(brain.three_wire_port.a)   # wrist, up / down
+claw_grab = DigitalOut(brain.three_wire_port.b)    # fingers, grip / release
 
 
 # ============================================================
-#  MODES
+#  FIELD  -  Game Manual v1.0, Appendix A, sheets A10 and A12
 # ============================================================
 
-# Push the robot by hand and read the true gear ratio off the screen.
-MEASURE_MODE = False
-MEASURE_DISTANCE_IN = 24.0
+FIELD_INSIDE_IN = 140.41   # inside wall to wall
 
-# Run one move per button press so you can tape measure each one.
-STEP_MODE = False
+GOAL_X_IN = 46.66          # our Alliance Goal, on the goal grid
+GOAL_Y_IN = 23.11          # ...23.11 in out from our wall
+GOAL_BASE_DIAMETER_IN = 5.61
 
-# Standing still before the routine starts. MUST be 0 at a competition.
-START_DELAY_MS = 0
+START_X_IN = 70.20         # middle of the wall = middle of the Toggle
 
-# Seat the arm on its bottom stop first. Costs about a second.
-HOME_LIFT_FIRST = True
-
-
-# ============================================================
-#  WHICH SIDE OF THE FIELD
-# ============================================================
-
-# Flip this when we switch alliance sides. It mirrors every turn so
-# the same routine works from either starting tile.
-MIRROR_TURNS = False
-
-
-# ============================================================
-#  DRIVETRAIN GEOMETRY
-# ============================================================
-
-WHEEL_CIRCUMFERENCE = 12.56   # 4 inch wheel. A 3.25 inch wheel is 10.21
-TRACK_WIDTH = 12.5            # inches, left wheel center to right
-DRIVE_GEAR_RATIO = 0.391      # motor turns per wheel turn - VERIFY THIS
+# Cup/pin/cup groups sit against the wall either side of the Toggle.
+# Starting in contact with one is illegal <SG1>b.
+WALL_GAP_LEFT_IN = 51.40
+WALL_GAP_RIGHT_IN = 89.01
 
 PI = 3.14159265
 
 
 # ============================================================
-#  THE ROUTE  -  these are the numbers you will actually tune
+#  ROUTE MATH  -  all derived. Change the settings, not this.
+#
+#  Local frame: we face INTO the field. "out" is away from our wall,
+#  "lat" is to our right. Our goal sits 23.11 out and 23.55 to one
+#  side, which side depending on the quadrant.
 # ============================================================
 
-# ---- FIELD FACTS, measured off the official drawings ----
-# Game Manual v1.0, Appendix A, sheet A10 "FIELD ELEMENT LOCATIONS".
-# All dimensions on that sheet are inches [millimetres].
-#
-# The field is 140.41 inches inside wall to wall. Every goal sits on
-# a grid at 23.11 / 46.66 / 70.20 / 93.75 / 117.30 inches, measured
-# from the wall behind the audience-left corner.
-#
-# The two white diagonals cut the field into four TRIANGULAR
-# quadrants: BOTTOM, LEFT, TOP, RIGHT. Each one holds exactly one
-# alliance goal and one neutral goal. The tall goal sits dead centre
-# at 70.20, 70.20, inside the Midfield.
-#
-# Red owns the BOTTOM and LEFT quadrants, blue owns TOP and RIGHT.
-# The Autonomous Line is the diagonal from the top-left corner to the
-# bottom-right corner. In coordinates, we are on the red side while
-#     y < 140.41 - x
-# Our goals:
-#     red goal in the BOTTOM quadrant : x 46.66, y 23.11
-#     red goal in the LEFT quadrant   : x 23.11, y 46.66
-#
-FIELD_INSIDE_IN = 140.41
+_SIDE = -1 if MIRROR_TURNS else 1
+_HALF = ROBOT_LENGTH_IN / 2.0
 
-# Distance from the wall we start against to the centre of the
-# alliance goal in that same quadrant. This is the number that
-# actually sets our drive distance, and it is short.
-GOAL_FROM_WALL_IN = 23.11
+GOAL_OUT_IN = GOAL_Y_IN
+GOAL_LAT_IN = -_SIDE * (FIELD_INSIDE_IN / 2.0 - GOAL_X_IN)
 
-# Alliance goals are only 3.25 inches tall, the lowest on the field,
-# which is why we aim at ours instead of a neutral goal.
+_A = math.radians(_SIDE * START_ANGLE_DEG)
 
+# Rearmost corner on the wall, so the centre sits this far out.
+START_OUT_IN = _HALF * (abs(math.cos(_A)) + abs(math.sin(_A)))
 
-# ---- OUR ROBOT: measure these two, they are the only unknowns ----
+if DRIVE_OFF_WALL_IN is None:
+    if abs(START_ANGLE_DEG) < 1.0:
+        # Square: stop level with the goal, so the turn is a clean 90.
+        DRIVE_OFF_WALL_IN = GOAL_OUT_IN - TURN_CENTER_FROM_BACK_IN
+    else:
+        # Tilted: clear the wall to pivot, plus real margin. At 45 deg
+        # the max() term is exactly zero, so this margin IS the leg -
+        # it was 2.0 once and the robot barely twitched.
+        DRIVE_OFF_WALL_IN = max(
+            0.0, math.sqrt(2.0) * _HALF - START_OUT_IN) + 8.0
 
-# Back bumper to front face at the start of the match. <SG1> caps us
-# at 18 inches, so this is 18 or less.
-ROBOT_LENGTH_IN = 18.0
+_c_out = START_OUT_IN + DRIVE_OFF_WALL_IN * math.cos(_A)
+_c_lat = DRIVE_OFF_WALL_IN * math.sin(_A)
 
-# How far in front of the robot the held pin sits once the wrist is
-# over the goal. Zero if the pin is inside our footprint.
-CLAW_REACH_IN = 0.0
+_v_out = GOAL_OUT_IN - _c_out
+_v_lat = GOAL_LAT_IN - _c_lat
+_range = math.sqrt(_v_out * _v_out + _v_lat * _v_lat)
 
-# A little past centre, so the pin drops into the goal rather than
-# onto its rim.
-OVERSHOOT_IN = 1.5
+# Point the BACK down that line; the front ends up 180 from it.
+TURN_TO_GOAL_DEG = math.degrees(math.atan2(_v_lat, _v_out) + math.pi - _A)
+while TURN_TO_GOAL_DEG > 180.0:
+    TURN_TO_GOAL_DEG -= 360.0
+while TURN_TO_GOAL_DEG < -180.0:
+    TURN_TO_GOAL_DEG += 360.0
 
+# Negative = driven in REVERSE, claw first.
+DRIVE_TO_GOAL_IN = -(_range - TURN_CENTER_FROM_BACK_IN
+                     - CLAW_REACH_IN + OVERSHOOT_IN)
 
-# ---- THE ROUTE ----
-
-# We start with our back on the wall, lined up with our goal, so the
-# whole auton is drive forward, drop, reverse. No turn at all. A turn
-# with no inertial sensor is the least repeatable thing we can do, so
-# not needing one is worth more than any tuning.
-#
-# Forward travel = how far the goal centre is from the wall, minus
-# the robot we are already occupying, plus a little overshoot.
-DRIVE_TO_GOAL_IN = (GOAL_FROM_WALL_IN
-                    - ROBOT_LENGTH_IN
-                    - CLAW_REACH_IN
-                    + OVERSHOOT_IN)
-
-# Only set this if we cannot line up square with the goal on the
-# starting tile. Positive is right, negative is left. Leave it at 0.
-TURN_TO_GOAL_DEG = 0.0
-
-# Back off after releasing. <SC8> wants us off the perimeter at the
-# end of autonomous, and it leaves the driver in free space. Keep it
-# smaller than DRIVE_TO_GOAL_IN or we reverse back into the wall.
-BACK_AWAY_IN = 6.0
-
-
-# ============================================================
-#  LIFT AND CLAW POSITIONS
-# ============================================================
-
-# How high the arm goes to clear the goal rim. MEASURE THIS - the
-# 90 below is a placeholder and is probably far too high.
-#
-# The goals are short. From the manual's glossary: Alliance goals
-# are 3.25 inches tall, the neutral goals inside a Quadrant are
-# 5.8 inches, and the centre goal in the Midfield is 8.7 inches.
-# We only need the pin to clear the rim of whichever one we are
-# aiming at, so this number is small.
-SCORE_LIFT_DEG = 90.0
-
-# Arm speed during auton. Slow is repeatable.
-LIFT_AUTON_PCT = 60
-
-# Give up on a lift move rather than grinding against something.
-LIFT_TIMEOUT_MS = 2000
-
-# Air takes a moment to actually move the piston.
-PNEUMATIC_SETTLE_MS = 300
-
-# Start clamped, because a pin is loaded in the claw before the match.
-PRELOAD_PIN = True
-
-
-# ============================================================
-#  SAFETY AND MOVEMENT CONTROL
-# ============================================================
-
-# Hard stop before the whistle. Never raise this past 15000.
-AUTON_TIME_LIMIT_MS = 14500
-
-KP_DRIVE_PER_IN = 5.0      # percent power per inch still to go
-KP_STRAIGHT_PER_IN = 4.0   # percent per inch that one side leads
-KP_TURN_PER_DEG = 1.2      # percent power per degree of heading error
-MIN_DRIVE_PCT = 8          # floor power, or it parks just shy of target
-DRIVE_TOL_IN = 0.5         # close enough on distance
-TURN_TOL_DEG = 2.0         # close enough on turns
+# Startup checks, shown on the brain.
+_TOUCH_RIGHT = (_SIDE * START_ANGLE_DEG) > 0
+DISC_AT_WALL = (abs(START_ANGLE_DEG) < 1.0
+                or _TOUCH_RIGHT == DISC_ON_RIGHT)
+DISC_GAP_IN = 0.0 if DISC_AT_WALL else 2.0 * _HALF * abs(math.sin(_A))
+TURN_CLEARS_WALL = _c_out >= math.sqrt(2.0) * _HALF
+BUMPER_HITS_GOAL = (CLAW_REACH_IN - OVERSHOOT_IN
+                    < GOAL_BASE_DIAMETER_IN / 2.0)
+START_SPOT_BAD = (START_X_IN - ROBOT_WIDTH_IN / 2.0 <= WALL_GAP_LEFT_IN
+                  or START_X_IN + ROBOT_WIDTH_IN / 2.0 >= WALL_GAP_RIGHT_IN)
 
 
 # ============================================================
@@ -266,10 +312,11 @@ TURN_TOL_DEG = 2.0         # close enough on turns
 
 is_homed = False
 step_number = 0
+bench_run = False
 
 
 # ============================================================
-#  SMALL HELPERS
+#  HELPERS
 # ============================================================
 
 def clamp(v, lo, hi):
@@ -287,8 +334,34 @@ def sign_of(x):
 
 
 def out_of_time():
-    # Every move checks this, so we never run past the whistle.
+    # Every move checks this so nothing runs past the whistle.
+    # Off on the bench in STEP_MODE and SELFTEST, where the clock
+    # keeps running while you measure and would kill every move.
+    if SELFTEST:
+        return False
+    if STEP_MODE and bench_run:
+        return False
     return brain.timer.time(MSEC) >= AUTON_TIME_LIMIT_MS
+
+
+def motor_deg_per_inch():
+    return (360.0 / WHEEL_CIRCUMFERENCE) * DRIVE_GEAR_RATIO
+
+
+def top_speed_in_s(pct):
+    return (DRIVE_MOTOR_RPM * pct / 100.0 / DRIVE_GEAR_RATIO
+            * WHEEL_CIRCUMFERENCE / 60.0)
+
+
+def move_timeout_ms(inches, pct):
+    return int(1500 + MOVE_TIMEOUT_FACTOR * abs(inches)
+               / top_speed_in_s(pct) * 1000)
+
+
+def wheel_speed_in_s():
+    rpm = (abs(left_drive.velocity(RPM))
+           + abs(right_drive.velocity(RPM))) / 2.0
+    return rpm * 6.0 / motor_deg_per_inch()
 
 
 def reset_drive_encoders():
@@ -296,14 +369,8 @@ def reset_drive_encoders():
     right_drive.set_position(0, DEGREES)
 
 
-def motor_deg_per_inch():
-    # Degrees the motor turns to move the robot one inch.
-    return (360.0 / WHEEL_CIRCUMFERENCE) * DRIVE_GEAR_RATIO
-
-
 def apply_min_power(power):
-    # P control fades to nothing near the target and leaves us parked
-    # just short of it, so hold a floor under the power.
+    # P control fades to nothing near the target and parks short.
     if power > 0 and power < MIN_DRIVE_PCT:
         return MIN_DRIVE_PCT
     if power < 0 and power > -MIN_DRIVE_PCT:
@@ -311,41 +378,37 @@ def apply_min_power(power):
     return power
 
 
-def mirror(angle):
-    # One routine, both alliance sides.
-    if MIRROR_TURNS:
-        return -angle
-    return angle
+def lift_position():
+    return (lift_left.position(DEGREES)
+            + lift_right.position(DEGREES)) / 2.0
 
 
 def status(text):
-    # Shows how far the routine got, on both screens.
     brain.screen.clear_screen()
     brain.screen.set_cursor(1, 1)
     brain.screen.print(text)
     brain.screen.set_cursor(2, 1)
-    brain.screen.print(
-        "t = {:.1f} s".format(brain.timer.time(MSEC) / 1000.0)
-    )
+    brain.screen.print("t = {:.1f} s".format(brain.timer.time(MSEC) / 1000.0))
 
     controller.screen.set_cursor(1, 1)
     controller.screen.print("{:<18}".format(text))
 
+    # Redrawn every refresh. A one-off banner gets wiped by the
+    # clear_screen above before anyone can read it.
+    brain.screen.set_cursor(12, 1)
+    brain.screen.print("BUILD " + BUILD + "   ")
+
 
 def step(text):
-    # Announces the move. In STEP_MODE it waits for A first, so you can
-    # put a tape measure on every single one.
     global step_number
-
     step_number += 1
     status("{}. {}".format(step_number, text))
 
-    if not STEP_MODE:
+    # Bench only. Under field control nobody can press A.
+    if not (STEP_MODE and bench_run):
         return
-
     brain.screen.set_cursor(4, 1)
     brain.screen.print("STEP MODE - press A")
-
     while not controller.buttonA.pressing():
         wait(20, MSEC)
     while controller.buttonA.pressing():
@@ -353,8 +416,105 @@ def step(text):
 
 
 def pause(ms):
-    # Let the robot stop coasting before the next move zeroes encoders.
     wait(ms, MSEC)
+
+
+def countdown(ms):
+    left = ms
+    while left > 0:
+        status("Starting in {:.0f}s".format((left + 999) / 1000))
+        wait(250, MSEC)
+        left -= 250
+
+
+# ============================================================
+#  MOVEMENT
+# ============================================================
+
+def drive_inches(inches, speed=50, timeout_ms=None):
+    # Positive forward, negative backward.
+    if timeout_ms is None:
+        timeout_ms = move_timeout_ms(inches, speed)
+    dpi = motor_deg_per_inch()
+    target = inches * dpi
+    reset_drive_encoders()
+
+    elapsed = 0
+    settled = 0
+    while elapsed < timeout_ms and not out_of_time():
+        l = left_drive.position(DEGREES)
+        r = right_drive.position(DEGREES)
+        error_in = (target - (l + r) / 2.0) / dpi
+
+        # Done only once close AND stopped. Quitting the moment we
+        # are close leaves it rolling and it coasts past the mark.
+        close = abs(error_in) < DRIVE_TOL_IN
+        if close and wheel_speed_in_s() < SETTLE_SPEED_IN_S:
+            settled += 20
+            if settled >= SETTLE_MS:
+                break
+        else:
+            settled = 0
+
+        power = clamp(error_in * KP_DRIVE_PER_IN, -speed, speed)
+        if not close:
+            power = apply_min_power(power)
+
+        # One side ahead of the other means we are curving, and every
+        # later move would inherit the error.
+        correction = ((l - r) / dpi) * KP_STRAIGHT_PER_IN
+
+        left_drive.spin(FORWARD, power - correction, PERCENT)
+        right_drive.spin(FORWARD, power + correction, PERCENT)
+
+        wait(20, MSEC)
+        elapsed += 20
+
+    left_drive.stop()
+    right_drive.stop()
+
+
+def turn_degrees(angle, speed=40, timeout_ms=None):
+    # Positive turns right. One robot degree is a little arc of the
+    # turning circle, which is where TRACK_WIDTH comes in.
+    if timeout_ms is None:
+        timeout_ms = move_timeout_ms(
+            abs(angle) * PI * TRACK_WIDTH / 360.0, speed)
+    dpi = motor_deg_per_inch()
+    per_robot_deg = (PI * TRACK_WIDTH / 360.0) * dpi
+    direction = sign_of(angle)
+    target_deg = abs(angle)
+
+    reset_drive_encoders()
+
+    elapsed = 0
+    settled = 0
+    while elapsed < timeout_ms and not out_of_time():
+        l = left_drive.position(DEGREES) * direction
+        r = right_drive.position(DEGREES) * direction * -1
+        error_deg = target_deg - ((l + r) / 2.0) / per_robot_deg
+
+        close = abs(error_deg) < TURN_TOL_DEG
+        if close and wheel_speed_in_s() < SETTLE_SPEED_IN_S:
+            settled += 20
+            if settled >= SETTLE_MS:
+                break
+        else:
+            settled = 0
+
+        power = clamp(error_deg * KP_TURN_PER_DEG, -speed, speed)
+        if not close:
+            power = apply_min_power(power)
+        power = power * direction
+
+        left_drive.spin(FORWARD, power, PERCENT)
+        right_drive.spin(FORWARD, -power, PERCENT)
+
+        wait(20, MSEC)
+        elapsed += 20
+
+    left_drive.stop()
+    right_drive.stop()
 
 
 # ============================================================
@@ -398,11 +558,8 @@ def lift_home():
     while elapsed < 2000:
         wait(20, MSEC)
         elapsed += 20
-
-        # Ignore the first moment or it finds the bottom instantly.
-        if elapsed < 300:
+        if elapsed < 300:          # or it "finds" the bottom instantly
             continue
-
         if abs(lift.velocity(RPM)) < 5:
             settled += 20
             if settled >= 250:
@@ -411,201 +568,142 @@ def lift_home():
             settled = 0
 
     lift.stop()
-
-    # Zero both encoders, because the hold reads each motor separately.
     lift_left.set_position(0, DEGREES)
     lift_right.set_position(0, DEGREES)
-
     lift.set_max_torque(100, PERCENT)
     is_homed = True
 
 
 def lift_to(target_deg):
-    # Send the arm to a height and hold it with the motor's own PID.
+    # UP runs on raw volts. spin_to_position asks for a velocity and
+    # the built-in loop backs off long before a 1:1 DR4B breaks free -
+    # driver_control.py found the same thing. DOWN is gentle, because
+    # gravity does that work and slamming the stop does not help.
+    if out_of_time():
+        return
+
     lift.set_stopping(HOLD)
+    lift.set_max_torque(100, PERCENT)
 
-    lift_left.spin_to_position(
-        target_deg, DEGREES, LIFT_AUTON_PCT, PERCENT, wait=False
-    )
-    lift_right.spin_to_position(
-        target_deg, DEGREES, LIFT_AUTON_PCT, PERCENT, wait=False
-    )
+    going_up = target_deg > lift_position()
+    if going_up:
+        lift_left.spin(FORWARD, LIFT_VOLTS, VOLT)
+        lift_right.spin(FORWARD, LIFT_VOLTS, VOLT)
+    else:
+        lift_left.spin(REVERSE, LIFT_DOWN_PCT, PERCENT)
+        lift_right.spin(REVERSE, LIFT_DOWN_PCT, PERCENT)
 
-    # Wait for it to arrive, but never longer than the timeout.
     elapsed = 0
+    pos = lift_position()
     while elapsed < LIFT_TIMEOUT_MS and not out_of_time():
-        if abs(lift_left.position(DEGREES) - target_deg) < 5:
+        pos = lift_position()
+        if going_up and pos >= target_deg - LIFT_TOL_DEG:
+            break
+        if not going_up and pos <= target_deg + LIFT_TOL_DEG:
             break
         wait(20, MSEC)
         elapsed += 20
 
+    # Hold where each motor actually ended up. Holding both to one
+    # shared number makes them fight over gear backlash.
+    lift_left.spin_to_position(lift_left.position(DEGREES), DEGREES,
+                               100, PERCENT, wait=False)
+    lift_right.spin_to_position(lift_right.position(DEGREES), DEGREES,
+                                100, PERCENT, wait=False)
+
+    if abs(pos - target_deg) >= LIFT_TOL_DEG:
+        # On a row status() does not immediately wipe, or a short arm
+        # reads as a drive problem.
+        brain.screen.set_cursor(10, 1)
+        brain.screen.print("LIFT SHORT {:.0f} of {:.0f}   ".format(
+            pos, target_deg))
+
 
 # ============================================================
-#  MOVEMENT
+#  TOGGLE
 # ============================================================
 
-def drive_inches(inches, speed=50, timeout_ms=3000):
-    # Positive is forward, negative is backward.
-    dpi = motor_deg_per_inch()
-    target = inches * dpi
-    reset_drive_encoders()
+def spin_toggle():
+    # Roll the Toggle to our colour, then stop and drive away - it
+    # only counts once nothing is touching it <SC4>.
+    if not intake_conveyor.installed():
+        status("NO INTAKE MOTOR p8")
+        wait(700, MSEC)
+        return
 
-    elapsed = 0
-    while elapsed < timeout_ms and not out_of_time():
-        l = left_drive.position(DEGREES)
-        r = right_drive.position(DEGREES)
-        travelled = (l + r) / 2.0
-        error_in = (target - travelled) / dpi
+    intake_conveyor.set_stopping(COAST)
+    intake_conveyor.set_max_torque(100, PERCENT)
+    intake_conveyor.spin(TOGGLE_SPIN_DIR, TOGGLE_SPIN_PCT, PERCENT)
 
-        if abs(error_in) < DRIVE_TOL_IN:
-            break
-
-        power = clamp(error_in * KP_DRIVE_PER_IN, -speed, speed)
-        power = apply_min_power(power)
-
-        # If one side has gone further, ease off that side, or we curve
-        # and every later move inherits the error.
-        drift_in = (l - r) / dpi
-        correction = drift_in * KP_STRAIGHT_PER_IN
-
-        left_drive.spin(FORWARD, power - correction, PERCENT)
-        right_drive.spin(FORWARD, power + correction, PERCENT)
-
+    waited = 0
+    while waited < TOGGLE_SPIN_MS and not out_of_time():
         wait(20, MSEC)
-        elapsed += 20
+        waited += 20
 
-    left_drive.stop()
-    right_drive.stop()
-
-
-def turn_degrees(angle, speed=40, timeout_ms=2500):
-    # Positive turns right. One robot degree is a small arc of the
-    # turning circle, which is where TRACK_WIDTH comes in.
-    dpi = motor_deg_per_inch()
-    motor_deg_per_robot_deg = (PI * TRACK_WIDTH / 360.0) * dpi
-    direction = sign_of(angle)
-    target_deg = abs(angle)
-
-    reset_drive_encoders()
-
-    elapsed = 0
-    while elapsed < timeout_ms and not out_of_time():
-        l = left_drive.position(DEGREES) * direction
-        r = right_drive.position(DEGREES) * direction * -1
-        progress_deg = ((l + r) / 2.0) / motor_deg_per_robot_deg
-        error_deg = target_deg - progress_deg
-
-        if abs(error_deg) < TURN_TOL_DEG:
-            break
-
-        power = clamp(error_deg * KP_TURN_PER_DEG, -speed, speed)
-        power = apply_min_power(power) * direction
-
-        left_drive.spin(FORWARD, power, PERCENT)
-        right_drive.spin(FORWARD, -power, PERCENT)
-
-        wait(20, MSEC)
-        elapsed += 20
-
-    left_drive.stop()
-    right_drive.stop()
+    intake_conveyor.stop()
+    intake_conveyor.set_stopping(HOLD)
 
 
 # ============================================================
-#  MEASURE MODE
-#
-#  Finds DRIVE_GEAR_RATIO by experiment instead of counting teeth,
-#  and absorbs any error in WHEEL_CIRCUMFERENCE while it does.
-# ============================================================
-
-def measure_mode():
-    left_drive.set_stopping(COAST)
-    right_drive.set_stopping(COAST)
-    left_drive.stop()
-    right_drive.stop()
-    reset_drive_encoders()
-
-    brain.screen.clear_screen()
-
-    while True:
-        l = left_drive.position(DEGREES)
-        r = right_drive.position(DEGREES)
-        avg = (l + r) / 2.0
-
-        ratio = avg * WHEEL_CIRCUMFERENCE / (MEASURE_DISTANCE_IN * 360.0)
-
-        brain.screen.set_cursor(1, 1)
-        brain.screen.print("MEASURE MODE: push robot     ")
-        brain.screen.set_cursor(2, 1)
-        brain.screen.print(
-            "forward {:.0f} in, then read:  ".format(MEASURE_DISTANCE_IN)
-        )
-        brain.screen.set_cursor(4, 1)
-        brain.screen.print(
-            "motor deg  L {:>6.0f} R {:>6.0f} ".format(l, r)
-        )
-        brain.screen.set_cursor(6, 1)
-        brain.screen.print("DRIVE_GEAR_RATIO = {:.3f}    ".format(ratio))
-        brain.screen.set_cursor(8, 1)
-        brain.screen.print("(L and R should be close)    ")
-
-        wait(100, MSEC)
-
-
-# ============================================================
-#  THE AUTONOMOUS ROUTINE
+#  THE ROUTINE
 # ============================================================
 
 def autonomous():
     global step_number
-
     step_number = 0
 
     left_drive.set_stopping(BRAKE)
     right_drive.set_stopping(BRAKE)
-
-    # Intake locked so nothing shakes loose on the way there.
     intake_conveyor.set_stopping(HOLD)
     intake_conveyor.stop()
 
+    brain.timer.clear()          # the 15 s clock starts here
+
     if START_DELAY_MS > 0:
-        brain.timer.clear()
         status("Starting in {:.0f}s".format(START_DELAY_MS / 1000.0))
         wait(START_DELAY_MS, MSEC)
 
-    brain.timer.clear()   # the 15 second clock starts here
-
-    # Clamp down on the preloaded pin before we move a wheel.
+    # Grip the preload, wrist down while driving to keep the load low.
     if PRELOAD_PIN:
-        grip_close()
+        claw_grab.set(True)
+    claw_pivot.set(False)
 
-    # Wrist down while driving keeps our height legal and the load low.
-    wrist_down()
-
-    if HOME_LIFT_FIRST:
+    if HOME_LIFT_FIRST and not BRING_UP:
         step("home lift")
         lift_home()
         pause(100)
 
-    # Arm up before we move. It is only a 3.25 inch goal and only a
-    # few inches of driving, so we may as well be at height before
-    # the wheels turn rather than doing two things at once.
+    # Toggle first, while the disc is still parked at the bar. The
+    # yellow pin already in this quadrant's neutral goal becomes ours
+    # once it is set <SC5>.
+    if SPIN_TOGGLE_FIRST and not BRING_UP:
+        step("spin toggle")
+        spin_toggle()
+        pause(100)
+
+    step("off wall {:.1f}in".format(DRIVE_OFF_WALL_IN))
+    drive_inches(DRIVE_OFF_WALL_IN, 80)
+    pause(150)
+
+    # The only turn, and the least repeatable move we make with no
+    # inertial sensor, so it is slow.
+    step("turn {:.0f}deg".format(TURN_TO_GOAL_DEG))
+    turn_degrees(TURN_TO_GOAL_DEG, 50)
+    pause(150)
+
+    # Arm up before the approach, so the pin clears the 3.25 in goal
+    # instead of hitting its side.
     step("raise to {:.0f}deg".format(SCORE_LIFT_DEG))
     lift_to(SCORE_LIFT_DEG)
     pause(100)
 
-    # Normally zero. Only runs if we could not line up on the tile.
-    if TURN_TO_GOAL_DEG != 0:
-        step("turn {:.0f}deg".format(mirror(TURN_TO_GOAL_DEG)))
-        turn_degrees(mirror(TURN_TO_GOAL_DEG), 40)
+    # Reverse, because the claw is on the back.
+    if abs(DRIVE_TO_GOAL_IN) > 0.1:
+        step("reverse {:.1f}in".format(abs(DRIVE_TO_GOAL_IN)))
+        drive_inches(DRIVE_TO_GOAL_IN, 70)
         pause(150)
 
-    # Slow. This is a few inches, and overshooting pushes the goal.
-    step("to goal {:.1f}in".format(DRIVE_TO_GOAL_IN))
-    drive_inches(DRIVE_TO_GOAL_IN, 30)
-    pause(150)
-
-    # Wrist over the goal first, then let go. This order matters.
+    # Wrist over the goal FIRST, then let go. Order matters.
     step("wrist over goal")
     wrist_up()
 
@@ -613,38 +711,175 @@ def autonomous():
     grip_open()
     pause(200)
 
-    step("back off {:.0f}in".format(BACK_AWAY_IN))
-    drive_inches(-BACK_AWAY_IN, 40)
+    # Forward pulls us off the goal, since we reversed into it.
+    step("clear goal {:.0f}in".format(BACK_AWAY_IN))
+    drive_inches(BACK_AWAY_IN, 80)
     pause(100)
 
-    # Tidy up: wrist in, arm down, everything stopped.
     step("reset")
     wrist_down()
     lift_to(0)
 
     left_drive.stop()
     right_drive.stop()
-    lift.stop()
-
     status("DONE {:.1f}s".format(brain.timer.time(MSEC) / 1000.0))
+
+
+# ============================================================
+#  SELFTEST  -  one subsystem at a time
+#
+#  Nothing here depends on the field or the route maths. Watch the
+#  screen; whatever does not happen is the broken thing.
+# ============================================================
+
+def selftest():
+    brain.timer.clear()
+
+    step("drive fwd 12in")
+    drive_inches(12.0, 60)
+    pause(700)
+
+    step("drive back 12in")
+    drive_inches(-12.0, 60)
+    pause(700)
+
+    step("turn RIGHT 90")
+    turn_degrees(90.0, 40)
+    pause(700)
+
+    step("turn LEFT 90")
+    turn_degrees(-90.0, 40)
+    pause(700)
+
+    step("lift UP")
+    lift_to(SCORE_LIFT_DEG)
+    pause(900)
+
+    step("lift DOWN")
+    lift_to(0.0)
+    pause(900)
+
+    step("wrist UP")
+    wrist_up()
+    pause(900)
+
+    step("wrist DOWN")
+    wrist_down()
+    pause(900)
+
+    step("grip OPEN")
+    grip_open()
+    pause(900)
+
+    step("grip CLOSE")
+    grip_close()
+    pause(900)
+
+    step("intake IN")
+    intake_conveyor.set_max_torque(100, PERCENT)
+    intake_conveyor.spin(REVERSE, 100, PERCENT)
+    pause(1500)
+    intake_conveyor.stop()
+    pause(500)
+
+    step("intake OUT")
+    intake_conveyor.spin(FORWARD, 100, PERCENT)
+    pause(1500)
+    intake_conveyor.stop()
+
+    left_drive.stop()
+    right_drive.stop()
+    status("SELFTEST DONE")
+
+
+# ============================================================
+#  MEASURE MODE
+#
+#  Finds DRIVE_GEAR_RATIO by experiment instead of counting teeth,
+#  and absorbs any error in WHEEL_CIRCUMFERENCE while it does.
+#  Also shows the lift angle, for SCORE_LIFT_DEG.
+#  Y flips the wrist, A opens/closes the grip.
+# ============================================================
+
+def measure_mode():
+    left_drive.set_stopping(COAST)
+    right_drive.set_stopping(COAST)
+    left_drive.stop()
+    right_drive.stop()
+    lift.set_stopping(COAST)
+    lift.stop()
+    reset_drive_encoders()
+    lift_left.set_position(0, DEGREES)
+    lift_right.set_position(0, DEGREES)
+
+    wrist = False
+    grip = PRELOAD_PIN
+    claw_pivot.set(wrist)
+    claw_grab.set(grip)
+    y_prev = False
+    a_prev = False
+    loops = 0
+
+    brain.screen.clear_screen()
+
+    while True:
+        y = controller.buttonY.pressing()
+        a = controller.buttonA.pressing()
+        if y and not y_prev:
+            wrist = not wrist
+            claw_pivot.set(wrist)
+        if a and not a_prev:
+            grip = not grip
+            claw_grab.set(grip)
+        y_prev = y
+        a_prev = a
+
+        loops += 1
+        wait(20, MSEC)
+        if loops % 5 != 0:
+            continue
+
+        l = left_drive.position(DEGREES)
+        r = right_drive.position(DEGREES)
+        ratio = ((l + r) / 2.0) * WHEEL_CIRCUMFERENCE / (
+            MEASURE_DISTANCE_IN * 360.0)
+
+        brain.screen.set_cursor(1, 1)
+        brain.screen.print("MEASURE: push robot fwd      ")
+        brain.screen.set_cursor(2, 1)
+        brain.screen.print("{:.0f} in, then read:        ".format(
+            MEASURE_DISTANCE_IN))
+        brain.screen.set_cursor(4, 1)
+        brain.screen.print("motor deg L{:>6.0f} R{:>6.0f} ".format(l, r))
+        brain.screen.set_cursor(6, 1)
+        brain.screen.print("DRIVE_GEAR_RATIO = {:.3f}    ".format(ratio))
+        brain.screen.set_cursor(8, 1)
+        brain.screen.print("(L and R should be close)    ")
+        brain.screen.set_cursor(10, 1)
+        brain.screen.print("lift {:>5.0f} deg             ".format(
+            lift_position()))
+        brain.screen.set_cursor(11, 1)
+        brain.screen.print("Y wrist {}  A grip {}  ".format(
+            "UP  " if wrist else "DOWN", "SHUT" if grip else "OPEN"))
 
 
 # ============================================================
 #  DRIVER CONTROL
 #
-#  Deliberately minimal. This file is an auton test program, so
-#  this is only here to drive the robot back off the field after
-#  a run. The real driver code lives in driver_control.py.
+#  Minimal on purpose. This file is a test program; the real driver
+#  code is driver_control.py. This is only here so you can drive the
+#  robot off the field after a run.
 # ============================================================
 
 def user_control():
     left_drive.set_stopping(BRAKE)
     right_drive.set_stopping(BRAKE)
+    lift.set_stopping(HOLD)
+    lift_moving = False
 
     while True:
         throttle = controller.axis3.position()
         steering = controller.axis1.position()
-
         if abs(throttle) < 5:
             throttle = 0
         if abs(steering) < 5:
@@ -653,7 +888,6 @@ def user_control():
         left_drive.spin(FORWARD, throttle + steering, PERCENT)
         right_drive.spin(FORWARD, throttle - steering, PERCENT)
 
-        # Just enough claw and lift to unload the robot and park it.
         if controller.buttonA.pressing():
             claw_grab.set(False)
         if controller.buttonY.pressing():
@@ -661,70 +895,122 @@ def user_control():
 
         if controller.buttonL1.pressing():
             lift.spin(FORWARD, 50, PERCENT)
+            lift_moving = True
         elif controller.buttonL2.pressing():
             lift.spin(REVERSE, 30, PERCENT)
-        else:
+            lift_moving = True
+        elif lift_moving:
+            # Stop ONCE on release. Calling stop() every loop
+            # re-captures the hold point and the arm creeps down.
             lift.stop()
+            lift_moving = False
 
         wait(20, MSEC)
 
 
 # ============================================================
-#  STARTUP
+#  STARTUP CHECKS
 # ============================================================
 
-# Measure mode never returns, so no Competition object gets made and
-# this stops being a competition program. Set it back to False after.
-if MEASURE_MODE:
-    measure_mode()
+def setup_problems():
+    problems = []
+    if START_SPOT_BAD:
+        problems.append("START_X_IN: robot hits wall cups")
+    if BUMPER_HITS_GOAL:
+        problems.append("CLAW_REACH_IN: bumper hits goal")
+    if SPIN_TOGGLE_FIRST and not DISC_AT_WALL:
+        problems.append("Disc {:.1f}in off Toggle".format(DISC_GAP_IN))
+    if not TURN_CLEARS_WALL:
+        problems.append("Turn clips wall: raise DRIVE_OFF_WALL_IN")
+    if SELFTEST:
+        problems.append("SELFTEST on - not the route")
+    if BRING_UP:
+        problems.append("BRING_UP on - no lift home, no toggle")
+    if STEP_MODE:
+        problems.append("STEP_MODE on")
+    if START_DELAY_MS > 0:
+        problems.append("START_DELAY_MS is not 0")
+    return problems
 
-# Put both pistons in a known state the moment the program loads.
+
+def show_problems():
+    brain.screen.set_cursor(4, 1)
+    brain.screen.print("start {:.0f}deg  turn {:+.0f}  rev {:.1f}in  ".format(
+        START_ANGLE_DEG, TURN_TO_GOAL_DEG, abs(DRIVE_TO_GOAL_IN)))
+
+    problems = setup_problems()
+    row = 6
+    for text in problems:
+        brain.screen.set_cursor(row, 1)
+        brain.screen.print("CHECK " + text)
+        row += 1
+    if problems:
+        controller.screen.set_cursor(3, 1)
+        controller.screen.print("! {:<16}".format(problems[0][:16]))
+
+
+# ============================================================
+#  ENTRY POINT  -  one place, one decision
+# ============================================================
+
+# Both pistons to a known state the moment the program loads.
 claw_pivot.set(False)
 claw_grab.set(PRELOAD_PIN)
 
-competition = Competition(user_control, autonomous)
+if MEASURE_MODE:
+    measure_mode()          # never returns
+elif STANDALONE:
+    show_problems()
+    countdown(BENCH_START_DELAY_MS)
+    if SELFTEST:
+        selftest()
+    else:
+        autonomous()
+    user_control()
+else:
+    # Real match: the field runs autonomous() then user_control().
+    show_problems()
+    competition = Competition(user_control, autonomous)
 
 
 # ============================================================
-#  SETUP NOTES  -  do these in order, once
+#  NOTES
 #
-#  1. GEAR RATIO. Set MEASURE_MODE = True, download, run. Push the
-#     robot straight forward exactly 24 inches. Read DRIVE_GEAR_RATIO
-#     off the brain screen, put it in the constant above, set
-#     MEASURE_MODE back to False. The 0.391 sitting there now is a
-#     guess inherited from the old file and is probably wrong.
+#  CALIBRATION, in order:
+#   1. MEASURE_MODE = True. Push the robot exactly 24 in. Read
+#      DRIVE_GEAR_RATIO off the screen. Should land near 3.5.
+#   2. TRACK_WIDTH: tape measure, wheel centre to wheel centre.
+#      The turn is wrong until this is right.
+#   3. SELFTEST = True. Watch which subsystems work.
+#   4. STEP_MODE = True. Run each move, measure what it actually did.
+#   5. CLAW_REACH_IN: lift up, wrist over, measure back bumper to
+#      the centre of the held pin.
+#   6. SCORE_LIFT_DEG: raise by hand until the pin clears the goal
+#      rim, read the angle in MEASURE_MODE, add a few degrees.
+#   7. Run it ten times from the same spot. Nine out of ten is good.
 #
-#  2. TRACK WIDTH. Tape measure, center of the left wheel to center of
-#     the right wheel. Turns stay wrong until this is right.
+#  RULES THIS IS BUILT AROUND (Game Manual v1.0, body numbering):
+#   <SG1>  start: 18 in cube, touching the tiles AND the perimeter on
+#          our side of the Autonomous Line, not touching Goals,
+#          Loaders, Load Zones or Toggles, not sharing a Quadrant
+#          with our partner, nothing moving, and touching no scoring
+#          object except the one preload.
+#   <SG5>  one Pin as a Preload, and only one. Not a cup.
+#   <SG6>  possession capped at one Pin and one Cup.
+#   <SG7>  do not touch anything on the opponent's side of the
+#          Autonomous Line during auton.
+#   <SC4>  a Toggle counts as set only when fully seated AND no robot
+#          is touching it, so we spin it then drive away.
+#   <SC5>  yellow pins in a Quadrant belong to whoever owns that
+#          Quadrant's Toggle.
+#   <SC7>  Autonomous Bonus is 12 points. ANY violation hands it to
+#          the other alliance, so a legal start beats a fast one.
+#   <SC8>  the Autonomous Win Point needs seven pins. A one pin auton
+#          cannot get it; this plays for the Bonus.
 #
-#  3. CHECK A STRAIGHT LINE. STEP_MODE = True, run the first move, and
-#     measure how far it actually went. If it asks for 14 and gives 12,
-#     the gear ratio is still off. Fix that before anything else,
-#     because every other number depends on it.
-#
-#  4. CHECK A TURN. Chalk a line on the floor, run the turn step, see
-#     whether 45 degrees is really 45. No inertial sensor here, so this
-#     is pure encoder math and wheel slip shows up as turn error.
-#
-#  5. THE ROUTE. The drive distance is worked out for us now, from
-#     the manual's 23.11 inch goal position minus our own length, so
-#     the only things to measure are ROBOT_LENGTH_IN and
-#     CLAW_REACH_IN. Set the robot back against the wall in the
-#     bottom quadrant, lined up with our alliance goal, pin loaded.
-#
-#  6. SCORING HEIGHT. Raise the arm by hand until the pin clears the
-#     goal rim, read the position off the screen, put it in
-#     SCORE_LIFT_DEG. Add a few degrees of margin.
-#
-#  7. TIME IT. Run the whole thing and read the DONE time. Anything
-#     over about 12 seconds is too tight. Drop BACK_AWAY_IN or set
-#     HOME_LIFT_FIRST = False to buy time back.
-#
-#  8. RUN IT TEN TIMES. Same tile, same pin, ten runs. Nine out of ten
-#     is a good auton. Six is a coin flip, and the fix is almost always
-#     a shorter route with fewer turns.
-#
-#  WHEN IT WORKS: copy autonomous() and its helpers into
-#  driver_control.py, replacing the empty autonomous() stub there.
-#  Keep this file for tuning.
+#  AT A REAL MATCH: field control runs ONE program for both periods.
+#  Set STANDALONE = False, or better, copy autonomous() and its
+#  helpers into driver_control.py over its empty stub. Carry the
+#  preload grip with it - driver_control.py boots with the grip OPEN
+#  and nobody can close it once the robot is on the field.
 # ============================================================
