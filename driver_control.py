@@ -5,18 +5,20 @@
 #  Drivetrain : PORT11/12 left, PORT13/14 right
 #  Lift (DR4B): TWO motors, PORT10 left + PORT9 right (reversed)
 #               green cartridge, 1:1, mirrored gear train
-#  Intake     : PORT7, one motor drives intake + conveyor
-#               (last season's driver control, unchanged)
-#  Claw       : pneumatic solenoid, three-wire port A
+#  Intake     : PORT8, one motor drives intake + conveyor
+#  Claw       : two pneumatic pistons, two separate jobs
+#               port A = wrist, pivots the claw up and down
+#               port B = fingers, grab and release the pin
 #
 #  Controls:
-#    Left stick vertical  (axis3) - throttle
-#    Right stick horiz.   (axis1) - steering
+#    Left stick vertical  (axis3) - forward/backward
+#    Right stick horiz.   (axis1) - pivot turning
 #    L1 - lift up
 #    L2 - lift down
 #    R1 - intake + conveyor in
 #    R2 - intake + conveyor out
-#    A  - claw toggle (pneumatic)
+#    A  - claw fingers grab / release (toggle)
+#    Y  - claw wrist pivot up / down (toggle)
 #    B + DOWN - re-home the lift
 #    B + UP   - lift motor direction diagnostic
 # ============================================================
@@ -55,13 +57,22 @@ lift_right = Motor(getattr(Ports, "PORT" + str(LIFT_RIGHT_PORT)), LIFT_CARTRIDGE
 lift = MotorGroup(lift_left, lift_right)
 
 # intake + conveyor
-# Exactly as in last season's driver control file: one motor on
-# PORT7, green cartridge, not reversed.
-intake_conveyor = Motor(Ports.PORT7, GearSetting.RATIO_18_1, False)
+# One motor on PORT8, green cartridge, not reversed.
+intake_conveyor = Motor(Ports.PORT8, GearSetting.RATIO_18_1, False)
 
 # claw (pneumatic)
-# Solenoid driver cable in three-wire port A on the brain.
-claw = DigitalOut(brain.three_wire_port.a)
+# Two pistons doing two completely different jobs, so they get
+# two separate buttons. Never wire these together.
+#
+# Port A = the wrist. Pivots the whole claw up and down.
+# Port B = the fingers. Opens and closes on the pin.
+#
+# They have to stay independent because we need to pivot while
+# still holding a pin, and let go without the wrist moving. The
+# rules also let us carry a pin and a cup at the same time, so
+# losing one grip should never cost us the other.
+claw_pivot = DigitalOut(brain.three_wire_port.a)
+claw_grab  = DigitalOut(brain.three_wire_port.b)
 
 
 # ============================================================
@@ -70,16 +81,22 @@ claw = DigitalOut(brain.three_wire_port.a)
 
 # ---- Drivetrain ----
 DEADBAND  = 5       # ignore joystick noise below this percent
-TURN_GAIN = 1.0     # raise toward 1.5 for sharper turning
 
 # ---- Intake ----
-MECH_SPEED = 100        # R1 in / R2 out, same as last season
+MECH_SPEED = 100        # R1 in / R2 out
 
-# ---- Claw (pneumatic) ----
-# State of the solenoid when the program starts. Whether "on"
-# means open or closed depends on how the cylinder is plumbed;
-# if the claw starts the wrong way round, flip this.
-CLAW_START_ON = False
+# ---- Claw ----
+# Where both pistons sit when the program boots. We want a
+# known state every time, not wherever the air left them.
+#
+# Starting the wrist DOWN and the fingers OPEN is the safe
+# combo: nothing is sticking up to hit the 18" sizing box at
+# inspection, and we are ready to grab straight away.
+#
+# If a piston boots the wrong way, flip its flag here. Swapping
+# the two air lines on that cylinder does the same thing.
+PIVOT_START_UP    = False
+GRAB_START_CLOSED = False
 
 # ---- Lift: protection ----
 # Full torque. At 1:1 a DR4B needs everything the motors have.
@@ -177,8 +194,10 @@ screen_timer = 0        # ms since last screen update
 on_stop      = False    # True = arm is known to be on its bottom stop
 lift_verdict = ""       # last per-motor verdict shown on the brain
 lift_press_moved = False  # did the arm move at all during this L1 press
-claw_on       = False   # current solenoid state
-claw_btn_prev = False   # button A last loop, for press detection
+pivot_up       = False  # is the wrist raised
+grab_closed    = False  # are the fingers clamped
+pivot_btn_prev = False  # Y last loop, so a hold counts as one press
+grab_btn_prev  = False  # A last loop, same idea
 
 
 def clamp(v, lo, hi):
@@ -587,8 +606,16 @@ def lift_control():
 # ============================================================
 #  INTAKE CONTROL  -- called every loop
 #
-#  Last season's intake, unchanged: R1 runs intake + conveyor in,
-#  R2 runs them out, release stops (HOLD, set in user_control).
+#  R1 = intake  (pulls a game piece in)
+#  R2 = outtake (spits it back out)
+#  Release stops (HOLD, set in user_control).
+#
+#  Note the motor directions look backwards here. On our build
+#  REVERSE is the direction that actually pulls inward, so R1
+#  gets REVERSE. The button labels are what matter -- R1 always
+#  means "take it in" no matter which way the motor has to turn
+#  to do that. If somebody flips the intake gearbox later, swap
+#  these two spin directions, not the buttons.
 #
 #  Override note: rule <SG6> allows only ONE cup and ONE pin on
 #  the robot. This intake does not stop itself, so not pulling in
@@ -596,9 +623,9 @@ def lift_control():
 # ============================================================
 def intake_control():
     if controller.buttonR1.pressing():
-        intake_conveyor.spin(FORWARD, MECH_SPEED, PERCENT)
-    elif controller.buttonR2.pressing():
         intake_conveyor.spin(REVERSE, MECH_SPEED, PERCENT)
+    elif controller.buttonR2.pressing():
+        intake_conveyor.spin(FORWARD, MECH_SPEED, PERCENT)
     else:
         intake_conveyor.stop()
 
@@ -606,29 +633,56 @@ def intake_control():
 # ============================================================
 #  CLAW CONTROL  -- called every loop
 #
-#  Pneumatic claw on three-wire port A. Button A toggles it: one
-#  press flips the solenoid, and it stays there until the next
-#  press. Acts on the press itself, so holding A does not make it
-#  chatter.
+#  Y = wrist up/down (port A). A = fingers open/closed (port B).
+#  Both are toggles: tap once, it stays put until you tap again.
+#  You do NOT have to hold the button to keep gripping, which
+#  matters because air only moves when the state changes --
+#  holding a button would not use more air, but forgetting to
+#  hold one would drop the pin. Acts on the press itself, so
+#  holding a button does not make it chatter.
 # ============================================================
-def claw_set(on):
-    global claw_on
-    claw_on = on
-    claw.set(on)
+def claw_screen():
+    # Both pistons on one line so the driver can see the whole
+    # claw at a glance without reading two separate messages.
+    a = "UP  " if pivot_up else "DOWN"
+    b = "HOLD" if grab_closed else "OPEN"
     controller.screen.set_cursor(2, 1)
-    controller.screen.print("CLAW ON " if on else "CLAW OFF")
+    controller.screen.print("Wrist " + a + " Grip " + b)
+
+
+def pivot_set(up):
+    global pivot_up
+    pivot_up = up
+    claw_pivot.set(up)
+    claw_screen()
+
+
+def grab_set(closed):
+    global grab_closed
+    grab_closed = closed
+    claw_grab.set(closed)
+    claw_screen()
 
 
 def claw_control():
-    global claw_btn_prev
-    pressed = controller.buttonA.pressing()
-    if pressed and not claw_btn_prev:
-        claw_set(not claw_on)
-    claw_btn_prev = pressed
+    global pivot_btn_prev, grab_btn_prev
+    pivot_btn = controller.buttonY.pressing()
+    grab_btn  = controller.buttonA.pressing()
+    if pivot_btn and not pivot_btn_prev:
+        pivot_set(not pivot_up)
+    if grab_btn and not grab_btn_prev:
+        grab_set(not grab_closed)
+    pivot_btn_prev = pivot_btn
+    grab_btn_prev  = grab_btn
 
 
 # ============================================================
 #  DRIVE CONTROL  -- called every loop
+#
+#  Left stick = straight forward/backward
+#  Right stick = pivot turn
+#
+#  If steering is being used, it overrides throttle.
 # ============================================================
 def drive_control():
     throttle = controller.axis3.position()
@@ -640,14 +694,13 @@ def drive_control():
     if abs(steering) < DEADBAND:
         steering = 0
 
-    left_power  = throttle + (steering * TURN_GAIN)
-    right_power = throttle - (steering * TURN_GAIN)
-
-    # Scale both sides down together if either exceeds 100
-    biggest = max(abs(left_power), abs(right_power))
-    if biggest > 100:
-        left_power  = left_power  * 100 / biggest
-        right_power = right_power * 100 / biggest
+    # pivot turning
+    if steering != 0:
+        left_power  = steering
+        right_power = -steering
+    else:
+        left_power  = throttle
+        right_power = throttle
 
     if left_power == 0 and right_power == 0:
         left_drive.stop()
@@ -666,9 +719,15 @@ def user_control():
 
     left_drive.set_stopping(BRAKE)
     right_drive.set_stopping(BRAKE)
-    intake_conveyor.set_stopping(HOLD)     # as last season
+    left_drive.set_max_torque(100, PERCENT)
+    right_drive.set_max_torque(100, PERCENT)
+    intake_conveyor.set_stopping(HOLD)
     intake_conveyor.stop()
-    claw_set(claw_on)                      # re-assert + show state
+    # Re-send both pistons at the start of driver control. The
+    # auton period may have left them anywhere, and this also
+    # puts the current state back on the controller screen.
+    pivot_set(pivot_up)
+    grab_set(grab_closed)
 
     while True:
         drive_control()
@@ -691,8 +750,13 @@ def autonomous():
 #  COMPETITION
 #  Must be at global scope, at the bottom of the file.
 # ============================================================
-claw_on = CLAW_START_ON
-claw.set(claw_on)
+# Put the claw in a known state as soon as the program loads,
+# before a match ever starts. Otherwise it sits wherever the
+# air pressure left it from last run.
+pivot_up = PIVOT_START_UP
+grab_closed = GRAB_START_CLOSED
+claw_pivot.set(pivot_up)
+claw_grab.set(grab_closed)
 
 competition = Competition(user_control, autonomous)
 
