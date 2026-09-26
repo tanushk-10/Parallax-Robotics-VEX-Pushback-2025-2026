@@ -33,7 +33,7 @@ import math
 brain = Brain()
 controller = Controller()
 
-BUILD = "v10 clean+marks"
+BUILD = "v11 turn+drop"
 
 
 # ############################################################
@@ -49,14 +49,17 @@ BUILD = "v10 clean+marks"
 #  Search this file for  "FIX ME"  to jump to each one.
 #
 #    [ ] 1. SELFTEST = True, run it. See which parts work.
-#    [ ] 2. TRACK_WIDTH        - never measured. Sets the turn.
-#    [ ] 3. SCORE_LIFT_DEG     - placeholder 90. Goal is 3.25in.
+#    [ ] 2. TRACK_WIDTH        - never measured. Then TURN_SCALE
+#                                (0.65 now) on field tiles.
+#    [ ] 3. SCORE_LIFT_DEG     - guess 120 (90 was too low).
 #    [ ] 4. CLAW_REACH_IN      - never measured. Bumper hits goal.
 #    [ ] 5. TOGGLE_SPIN_DIR    - unknown which way rolls it right.
 #    [ ] 6. DRIVE_GEAR_RATIO   - confirm 3.5 with MEASURE_MODE.
 #
 #  Already fixed, do not undo:
 #    DRIVE_GEAR_RATIO 0.391 -> 3.5   (turn was 10 deg not 65)
+#    TURN_SCALE 1.0 -> 0.65          (video: -54 turned 80-90)
+#    claw drops on port A, like Y    (pistons were swapped)
 #    lift now raises on raw volts    (it never rose before)
 #    TOGGLE_SPIN_PCT 60 -> 100       (intake was weak)
 # ============================================================
@@ -64,7 +67,7 @@ BUILD = "v10 clean+marks"
 # ---------------- MODES ----------------
 
 SELFTEST = False       # <<<<< FIX ME 1: SET True AND RUN THIS FIRST
-                       #       tests every subsystem one at a time
+#       tests every subsystem one at a time
 BRING_UP = False       # skip lift home + Toggle, drive immediately
 MEASURE_MODE = False   # do not drive; read the gear ratio by hand
 STEP_MODE = False      # one move per press of A
@@ -99,10 +102,25 @@ WHEEL_CIRCUMFERENCE = 12.56  # 4 in wheel. A 3.25 in wheel is 10.21
 #       DIAMETER is this gap, and that circle is what turns
 #       "54 degrees" into inches of wheel travel.
 #
-#       Turned too little -> raise 0.5. Too much -> lower 0.5.
+#       Tape measure it and leave it. A turn that is wrong ON THE
+#       FIELD is TURN_SCALE below, not this. (If you change this,
+#       re-check TURN_SCALE.)
 #       (Front to back is a different constant: see
 #        TURN_CENTER_FROM_BACK_IN below.)
 TRACK_WIDTH = 12.5           # SIDE TO SIDE, left wheel to right wheel
+
+# Turns only - straight drives are not affected. How many times the
+# geometry's wheel travel a turn really takes on field tiles.
+# FIXED from the field video (IMG_4863, 2026-09-25): the -54 turn
+# actually turned 80-90 degrees - too FAR, not too little - so
+# 1.0 -> 0.65. (It was briefly 2.0 on a report that it turned half;
+# the video disproved that, and 2.0 would spin it ~160.) Tune it ON
+# FIELD TILES, not the shop floor:
+#     new TURN_SCALE = old TURN_SCALE * asked angle / real angle
+#     e.g. asked 54, turned 60 -> 0.65 * 54 / 60 = 0.59
+# If MEASURE_MODE later shows DRIVE_GEAR_RATIO is wrong, fix that
+# first and put this back to 1.0 - the ratio moves turns too.
+TURN_SCALE = 0.65
 DRIVE_MOTOR_RPM = 200        # green cartridge
 
 # Motor turns per wheel turn. 3.5 = our 2:7 gearing, small gear on
@@ -124,7 +142,7 @@ ROBOT_WIDTH_IN = 18.0    # side to side
 TURN_CENTER_FROM_BACK_IN = ROBOT_LENGTH_IN / 2.0
 
 # How far PAST the back bumper the held pin sits, with the lift up
-# and the wrist over. 0 = inside our footprint. MEASURE THIS: under
+# at SCORE_LIFT_DEG. 0 = inside our footprint. MEASURE THIS: under
 # 2.8 the bumper hits the goal base instead of the pin going in.
 # <<<<< FIX ME 4: NEVER MEASURED. At 0.0 the brain warns the bumper
 #       hits the goal base instead of the pin going in.
@@ -161,30 +179,53 @@ TOGGLE_SPIN_DIR = REVERSE
 # ---------------- LIFT ----------------
 
 HOME_LIFT_FIRST = True
-# <<<<< FIX ME 3: PLACEHOLDER. 90 deg of a 1:1 arm is probably far
-#       more than needed - the Alliance Goal is only 3.25 in tall -
-#       and may be past the arm's travel. Read the real number off
-#       MEASURE_MODE: raise by hand until the pin clears the rim.
-SCORE_LIFT_DEG = 90.0
+# <<<<< FIX ME 3: STILL A GUESS. Was 90, which did not get the pin
+#       high enough in auton, so raised to 120. Read the real number
+#       off MEASURE_MODE: raise by hand until the pin clears the rim.
+#       Asking for more than the arm's travel is safe: it stops
+#       pushing at the top stop (LIFT_STALL_* below) and the brain
+#       shows "LIFT SHORT <reached> of <asked>" - use that number.
+SCORE_LIFT_DEG = 120.0
 # FIXED: the lift never rose because it used spin_to_position at 60
 # percent. It now goes up on raw volts, like driver_control.py.
 LIFT_VOLTS = 12.0       # UP runs on raw volts; this arm needs all of it
 LIFT_DOWN_PCT = 35      # DOWN is gentle; gravity does the work
 LIFT_TOL_DEG = 5
 LIFT_TIMEOUT_MS = 2500
+# Going up at full volts and still not moving = the arm is on its top
+# stop (or out of torque). More pushing only burns auton time.
+LIFT_STALL_RPM = 2      # same as STALL_VEL_RPM in driver_control.py
+LIFT_STALL_MS = 300
 
 
 # ---------------- CLAW ----------------
+#
+# Works like button Y in driver control: ONE piston, port A, holds
+# the pin and lets go of it. On the robot Y is what drops the pin,
+# even though driver_control.py calls port A the "wrist".
+# The preload starts in the claw, closed. Auton opens it once, after
+# the lift is up and we have reversed to the goal. That is all.
 
-PRELOAD_PIN = True         # grip closed at boot, on the preloaded pin
+PRELOAD_PIN = True         # claw shut on the preloaded pin at boot
+# The port A value that HOLDS the pin. Every program boots port A
+# off and the claw starts shut on the pin, so off = holding.
+# If the pin falls out the moment the program starts, flip to True.
+CLAW_HOLD = False
+# Port B, button A's piston. Off, exactly as driver_control.py
+# boots it - the pose the drivers score from with Y. (It used to
+# boot ON in this file, and the claw was not over the goal.)
+# Auton never moves it.
+PISTON_B_ON = False
 PNEUMATIC_SETTLE_MS = 300  # air takes a moment to move the piston
 
 
 # ---------------- DRIVE TUNING ----------------
 
-KP_DRIVE_PER_IN = 5.0      # percent power per inch still to go
+# FIXED: was 5.0. At 5 the 8 in leg never got past 40% and timed
+# out short, and the route released the pin after the 14.5 s limit.
+KP_DRIVE_PER_IN = 10.0     # percent power per inch still to go
 KP_STRAIGHT_PER_IN = 4.0   # percent per inch one side leads the other
-KP_TURN_PER_DEG = 1.2      # percent power per degree of heading error
+KP_TURN_PER_DEG = 1.2      # percent power per degree, x TURN_SCALE
 MIN_DRIVE_PCT = 8          # floor, or it parks just short of target
 DRIVE_TOL_IN = 0.5         # close enough on distance
 TURN_TOL_DEG = 2.0         # close enough on turns
@@ -222,8 +263,9 @@ lift = MotorGroup(lift_left, lift_right)
 # so this one motor turns both.
 intake_conveyor = Motor(Ports.PORT8, GearSetting.RATIO_18_1, False)
 
-claw_pivot = DigitalOut(brain.three_wire_port.a)   # wrist, up / down
-claw_grab = DigitalOut(brain.three_wire_port.b)    # fingers, grip / release
+# driver_control.py calls these claw_pivot (A) and claw_grab (B).
+claw = DigitalOut(brain.three_wire_port.a)      # holds / drops pin: Y
+piston_b = DigitalOut(brain.three_wire_port.b)  # button A's piston
 
 
 # ============================================================
@@ -313,6 +355,8 @@ START_SPOT_BAD = (START_X_IN - ROBOT_WIDTH_IN / 2.0 <= WALL_GAP_LEFT_IN
 is_homed = False
 step_number = 0
 bench_run = False
+claw_holding = PRELOAD_PIN   # is the claw shut
+piston_b_on = PISTON_B_ON
 
 
 # ============================================================
@@ -476,12 +520,15 @@ def drive_inches(inches, speed=50, timeout_ms=None):
 
 def turn_degrees(angle, speed=40, timeout_ms=None):
     # Positive turns right. One robot degree is a little arc of the
-    # turning circle, which is where TRACK_WIDTH comes in.
+    # turning circle, which is where TRACK_WIDTH comes in, scaled by
+    # TURN_SCALE for how the robot really turns on the tiles.
+    wheel_in_per_robot_deg = PI * TRACK_WIDTH / 360.0 * TURN_SCALE
     if timeout_ms is None:
+        # Scaled too, so the time limit matches the real wheel travel.
         timeout_ms = move_timeout_ms(
-            abs(angle) * PI * TRACK_WIDTH / 360.0, speed)
+            abs(angle) * wheel_in_per_robot_deg, speed)
     dpi = motor_deg_per_inch()
-    per_robot_deg = (PI * TRACK_WIDTH / 360.0) * dpi
+    per_robot_deg = wheel_in_per_robot_deg * dpi
     direction = sign_of(angle)
     target_deg = abs(angle)
 
@@ -502,7 +549,11 @@ def turn_degrees(angle, speed=40, timeout_ms=None):
         else:
             settled = 0
 
-        power = clamp(error_deg * KP_TURN_PER_DEG, -speed, speed)
+        # x TURN_SCALE keeps the push per inch of wheel travel the
+        # same whatever TURN_SCALE is, so the turn's timing does not
+        # change when it is retuned.
+        power = clamp(error_deg * KP_TURN_PER_DEG * TURN_SCALE,
+                      -speed, speed)
         if not close:
             power = apply_min_power(power)
         power = power * direction
@@ -521,23 +572,27 @@ def turn_degrees(angle, speed=40, timeout_ms=None):
 #  CLAW
 # ============================================================
 
-def wrist_up():
-    claw_pivot.set(True)
+def claw_set(hold):
+    # Port A, the piston button Y fires in driver control.
+    global claw_holding
+    claw_holding = hold
+    claw.set(CLAW_HOLD if hold else not CLAW_HOLD)
+
+
+def piston_b_set(on):
+    global piston_b_on
+    piston_b_on = on
+    piston_b.set(on)
+
+
+def drop_pin():
+    # One press of Y: let go of the pin.
+    claw_set(False)
     wait(PNEUMATIC_SETTLE_MS, MSEC)
 
 
-def wrist_down():
-    claw_pivot.set(False)
-    wait(PNEUMATIC_SETTLE_MS, MSEC)
-
-
-def grip_close():
-    claw_grab.set(True)
-    wait(PNEUMATIC_SETTLE_MS, MSEC)
-
-
-def grip_open():
-    claw_grab.set(False)
+def claw_close():
+    claw_set(True)
     wait(PNEUMATIC_SETTLE_MS, MSEC)
 
 
@@ -594,6 +649,7 @@ def lift_to(target_deg):
         lift_right.spin(REVERSE, LIFT_DOWN_PCT, PERCENT)
 
     elapsed = 0
+    stalled = 0
     pos = lift_position()
     while elapsed < LIFT_TIMEOUT_MS and not out_of_time():
         pos = lift_position()
@@ -601,6 +657,15 @@ def lift_to(target_deg):
             break
         if not going_up and pos <= target_deg + LIFT_TOL_DEG:
             break
+        # At the top stop. Skip the first 300 ms, or a standing start
+        # reads as a stall.
+        if (going_up and elapsed >= 300
+                and abs(lift.velocity(RPM)) < LIFT_STALL_RPM):
+            stalled += 20
+            if stalled >= LIFT_STALL_MS:
+                break
+        else:
+            stalled = 0
         wait(20, MSEC)
         elapsed += 20
 
@@ -611,7 +676,13 @@ def lift_to(target_deg):
     lift_right.spin_to_position(lift_right.position(DEGREES), DEGREES,
                                 100, PERCENT, wait=False)
 
-    if abs(pos - target_deg) >= LIFT_TOL_DEG:
+    # Short only. Coasting PAST the target on 12 V is harmless and
+    # used to be reported as "SHORT" too.
+    if going_up:
+        short = pos < target_deg - LIFT_TOL_DEG
+    else:
+        short = pos > target_deg + LIFT_TOL_DEG
+    if short:
         # On a row status() does not immediately wipe, or a short arm
         # reads as a drive problem.
         brain.screen.set_cursor(10, 1)
@@ -663,10 +734,11 @@ def autonomous():
         status("Starting in {:.0f}s".format(START_DELAY_MS / 1000.0))
         wait(START_DELAY_MS, MSEC)
 
-    # Grip the preload, wrist down while driving to keep the load low.
+    # The preload is already in the claw. Keep it shut; leave port B
+    # where it booted. Both already set on load, so no air wait.
     if PRELOAD_PIN:
-        claw_grab.set(True)
-    claw_pivot.set(False)
+        claw_set(True)
+    piston_b_set(PISTON_B_ON)
 
     if HOME_LIFT_FIRST and not BRING_UP:
         step("home lift")
@@ -690,7 +762,7 @@ def autonomous():
     step("turn {:.0f}deg".format(TURN_TO_GOAL_DEG))
     turn_degrees(TURN_TO_GOAL_DEG, 50)
     pause(150)
-
+# THIS IS CODE FOR LIFT DURING AUTO - TK
     # Arm up before the approach, so the pin clears the 3.25 in goal
     # instead of hitting its side.
     step("raise to {:.0f}deg".format(SCORE_LIFT_DEG))
@@ -703,12 +775,12 @@ def autonomous():
         drive_inches(DRIVE_TO_GOAL_IN, 70)
         pause(150)
 
-    # Wrist over the goal FIRST, then let go. Order matters.
-    step("wrist over goal")
-    wrist_up()
-
-    step("release pin")
-    grip_open()
+    # Lift up, backed up to the goal: just drop it. Same as one press
+    # of Y. (This used to fire port A, then flip port B - the pistons
+    # were labelled the wrong way round, so it let go first and moved
+    # the claw after.)
+    step("drop pin")
+    drop_pin()
     pause(200)
 
     # Forward pulls us off the goal, since we reversed into it.
@@ -716,8 +788,8 @@ def autonomous():
     drive_inches(BACK_AWAY_IN, 80)
     pause(100)
 
+    # Claw stays open, ready for the driver's next pin (Y shuts it).
     step("reset")
-    wrist_down()
     lift_to(0)
 
     left_drive.stop()
@@ -759,20 +831,12 @@ def selftest():
     lift_to(0.0)
     pause(900)
 
-    step("wrist UP")
-    wrist_up()
+    step("claw DROP (Y)")
+    drop_pin()
     pause(900)
 
-    step("wrist DOWN")
-    wrist_down()
-    pause(900)
-
-    step("grip OPEN")
-    grip_open()
-    pause(900)
-
-    step("grip CLOSE")
-    grip_close()
+    step("claw SHUT (Y)")
+    claw_close()
     pause(900)
 
     step("intake IN")
@@ -798,7 +862,8 @@ def selftest():
 #  Finds DRIVE_GEAR_RATIO by experiment instead of counting teeth,
 #  and absorbs any error in WHEEL_CIRCUMFERENCE while it does.
 #  Also shows the lift angle, for SCORE_LIFT_DEG.
-#  Y flips the wrist, A opens/closes the grip.
+#  Y opens/shuts the claw (port A), A flips port B - same buttons
+#  as driver control.
 # ============================================================
 
 def measure_mode():
@@ -812,10 +877,8 @@ def measure_mode():
     lift_left.set_position(0, DEGREES)
     lift_right.set_position(0, DEGREES)
 
-    wrist = False
-    grip = PRELOAD_PIN
-    claw_pivot.set(wrist)
-    claw_grab.set(grip)
+    claw_set(PRELOAD_PIN)
+    piston_b_set(PISTON_B_ON)
     y_prev = False
     a_prev = False
     loops = 0
@@ -826,11 +889,9 @@ def measure_mode():
         y = controller.buttonY.pressing()
         a = controller.buttonA.pressing()
         if y and not y_prev:
-            wrist = not wrist
-            claw_pivot.set(wrist)
+            claw_set(not claw_holding)
         if a and not a_prev:
-            grip = not grip
-            claw_grab.set(grip)
+            piston_b_set(not piston_b_on)
         y_prev = y
         a_prev = a
 
@@ -859,8 +920,9 @@ def measure_mode():
         brain.screen.print("lift {:>5.0f} deg             ".format(
             lift_position()))
         brain.screen.set_cursor(11, 1)
-        brain.screen.print("Y wrist {}  A grip {}  ".format(
-            "UP  " if wrist else "DOWN", "SHUT" if grip else "OPEN"))
+        brain.screen.print("Y claw {}  A port B {}  ".format(
+            "SHUT" if claw_holding else "OPEN",
+            "ON " if piston_b_on else "OFF"))
 
 
 # ============================================================
@@ -876,6 +938,8 @@ def user_control():
     right_drive.set_stopping(BRAKE)
     lift.set_stopping(HOLD)
     lift_moving = False
+    y_prev = False
+    a_prev = False
 
     while True:
         throttle = controller.axis3.position()
@@ -888,10 +952,16 @@ def user_control():
         left_drive.spin(FORWARD, throttle + steering, PERCENT)
         right_drive.spin(FORWARD, throttle - steering, PERCENT)
 
-        if controller.buttonA.pressing():
-            claw_grab.set(False)
-        if controller.buttonY.pressing():
-            claw_pivot.set(False)
+        # Same as driver control: Y toggles the claw, A toggles port
+        # B, once per press.
+        y = controller.buttonY.pressing()
+        a = controller.buttonA.pressing()
+        if y and not y_prev:
+            claw_set(not claw_holding)
+        if a and not a_prev:
+            piston_b_set(not piston_b_on)
+        y_prev = y
+        a_prev = a
 
         if controller.buttonL1.pressing():
             lift.spin(FORWARD, 50, PERCENT)
@@ -953,9 +1023,10 @@ def show_problems():
 #  ENTRY POINT  -  one place, one decision
 # ============================================================
 
-# Both pistons to a known state the moment the program loads.
-claw_pivot.set(False)
-claw_grab.set(PRELOAD_PIN)
+# Both pistons to a known state the moment the program loads: claw
+# shut on the preload, the same way driver_control.py boots.
+claw_set(PRELOAD_PIN)
+piston_b_set(PISTON_B_ON)
 
 if MEASURE_MODE:
     measure_mode()          # never returns
@@ -980,11 +1051,12 @@ else:
 #   1. MEASURE_MODE = True. Push the robot exactly 24 in. Read
 #      DRIVE_GEAR_RATIO off the screen. Should land near 3.5.
 #   2. TRACK_WIDTH: tape measure, wheel centre to wheel centre.
-#      The turn is wrong until this is right.
+#      Then TURN_SCALE, on field tiles: run the route, read the
+#      real turn angle, scale by asked / real.
 #   3. SELFTEST = True. Watch which subsystems work.
 #   4. STEP_MODE = True. Run each move, measure what it actually did.
-#   5. CLAW_REACH_IN: lift up, wrist over, measure back bumper to
-#      the centre of the held pin.
+#   5. CLAW_REACH_IN: lift up, measure back bumper to the centre
+#      of the held pin.
 #   6. SCORE_LIFT_DEG: raise by hand until the pin clears the goal
 #      rim, read the angle in MEASURE_MODE, add a few degrees.
 #   7. Run it ten times from the same spot. Nine out of ten is good.
@@ -1011,6 +1083,7 @@ else:
 #  AT A REAL MATCH: field control runs ONE program for both periods.
 #  Set STANDALONE = False, or better, copy autonomous() and its
 #  helpers into driver_control.py over its empty stub. Carry the
-#  preload grip with it - driver_control.py boots with the grip OPEN
-#  and nobody can close it once the robot is on the field.
+#  claw start with it (claw_set / piston_b_set at ENTRY POINT) so
+#  the preload is held from the moment the program loads - nobody
+#  can shut the claw once the robot is on the field.
 # ============================================================
