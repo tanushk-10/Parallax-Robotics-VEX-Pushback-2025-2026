@@ -274,7 +274,7 @@ DRIVE_OFF_WALL_IN = None  # None = worked out below. A number overrides.
 # turns that are already right.
 #
 # Turn short of the goal by ~5 deg? Put 5 here. Overshoots it? -5.
-TURN_TRIM_DEG = 0.0
+TURN_TRIM_DEG = 40.0
 
 OVERSHOOT_IN = 0.0      # extra on the last leg, to trim where it lands
 BACK_AWAY_IN = 6.0      # pull off the goal at the end
