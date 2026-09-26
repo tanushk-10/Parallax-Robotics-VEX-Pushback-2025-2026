@@ -5,6 +5,10 @@
 <title>Auton path viewer</title>
 <style>
   :root {
+    --display: "Bahnschrift", "DIN Alternate", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+    --sans:    "Corbel", "Candara", "Segoe UI", system-ui, sans-serif;
+    --mono:    "Cascadia Mono", Consolas, ui-monospace, "Courier New", monospace;
+
     --ink:      #16181d;
     --ink-2:    #5a6069;
     --rule:     #d7dade;
@@ -16,26 +20,19 @@
     --red:      #c8202c;
     --blue:     #1567cf;
     --yellow:   #f2c500;
-    --path:     #e2610a;
-    --ok:       #1a7f46;
-    --warn:     #b4560c;
+    --path:     #0e8175;
+    --path-pale:#e7f2f0;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0; background: var(--paper); color: var(--ink);
-    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font: 14px/1.55 var(--sans);
   }
   .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 24px 60px; }
 
   header { border-bottom: 2px solid var(--ink); padding-bottom: 12px; margin-bottom: 22px; }
-  h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.01em; }
-  .sub { margin-top: 4px; color: var(--ink-2); font-size: 13px; }
-  .build {
-    float: right; font: 12px/1.6 ui-monospace, Consolas, "Courier New", monospace;
-    color: var(--ink-2); border: 1px solid var(--rule); border-radius: 3px;
-    padding: 1px 7px; background: var(--panel);
-  }
-
+  h1 { margin: 0; font: 600 23px/1.25 var(--display); letter-spacing: 0.01em; }
+  .sub { margin-top: 7px; color: var(--ink-2); font-size: 13.5px; max-width: 78ch; }
   .cols { display: flex; gap: 26px; align-items: flex-start; }
   .left { flex: 0 0 auto; }
   .right { flex: 1 1 auto; min-width: 280px; }
@@ -51,43 +48,39 @@
   button:active { transform: translateY(1px); }
   input[type=range] { flex: 1; accent-color: var(--path); }
   .clock {
-    font: 13px/1 ui-monospace, Consolas, monospace; color: var(--ink-2);
+    font: 13px/1 var(--mono); color: var(--ink-2);
     min-width: 54px; text-align: right;
   }
 
   h2 {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--ink-2); margin: 0 0 8px; font-weight: 650;
+    font: 600 11px/1 var(--display); text-transform: uppercase; letter-spacing: 0.16em;
+    color: var(--ink-2); margin: 0 0 9px;
   }
   .block { margin-bottom: 22px; }
 
   ol.steps { list-style: none; margin: 0; padding: 0;
-             font: 12.5px/1 ui-monospace, Consolas, monospace; }
+             font: 12.5px/1 var(--mono); }
   ol.steps li {
     display: flex; gap: 10px; padding: 6px 8px; border-left: 2px solid transparent;
-    color: var(--ink-2);
+    color: var(--ink);
   }
   ol.steps li .n { width: 14px; text-align: right; opacity: .55; }
   ol.steps li .d { margin-left: auto; opacity: .6; }
   ol.steps li.on {
-    background: #fff5ec; border-left-color: var(--path); color: var(--ink); font-weight: 600;
+    background: var(--path-pale); border-left-color: var(--path); color: var(--ink); font-weight: 600;
   }
-  ol.steps li.done { color: #9aa0a8; }
+  ol.steps li.done { color: var(--ink-2); opacity: .7; }
 
   table.nums { width: 100%; border-collapse: collapse;
-               font: 12.5px/1 ui-monospace, Consolas, monospace; }
+               font: 12.5px/1 var(--mono); }
   table.nums td { padding: 5px 0; border-bottom: 1px solid var(--rule); }
   table.nums td:last-child { text-align: right; }
   table.nums tr:last-child td { border-bottom: none; }
   .k { color: var(--ink-2); }
 
-  .flag { padding: 8px 10px; border-radius: 3px; font-size: 12.5px; margin-bottom: 6px; }
-  .flag.bad  { background: #fdf3ea; border-left: 3px solid var(--warn); color: #6b3708; }
-  .flag.good { background: #eef7f1; border-left: 3px solid var(--ok); color: #145c33; }
-
   footer { margin-top: 26px; padding-top: 12px; border-top: 1px solid var(--rule);
            color: var(--ink-2); font-size: 12px; }
-  code { font: 12px ui-monospace, Consolas, monospace; background: var(--panel);
+  code { font: 12px var(--mono); background: var(--panel);
          padding: 1px 4px; border-radius: 2px; }
 </style>
 </head>
@@ -95,9 +88,8 @@
 <div class="wrap">
 
 <header>
-  <span class="build" id="build"></span>
-  <h1>Auton path &mdash; blue RIGHT quadrant</h1>
-  <div class="sub">Generated from <code>auton.py</code>. Field geometry from Game Manual v1.0, Appendix A sheets A10 and A12.</div>
+  <h1>Our Team's 15 Second Autonomous Routine</h1>
+  <div class="sub">We created this from <code>auton.py</code> and we utilized the Game Manual v1.0, Appendix A sheets A10 and A12.</div>
 </header>
 
 <div class="cols">
@@ -121,11 +113,6 @@
       <h2>Route</h2>
       <table class="nums" id="route"></table>
     </div>
-
-    <div class="block">
-      <h2>Checks</h2>
-      <div id="flags"></div>
-    </div>
   </div>
 </div>
 
@@ -136,10 +123,9 @@
 <script>
 window.onerror = function (msg, src, line, col) {
   document.body.insertAdjacentHTML("afterbegin",
-    '<pre style="margin:0;padding:14px;background:#fdf3ea;border-bottom:3px solid #b4560c;' +
-    'font:12px ui-monospace,Consolas,monospace;color:#6b3708;white-space:pre-wrap">' +
-    'Script error on line ' + line + ':
-' + msg + '</pre>');
+    '<pre style="margin:0;padding:14px;background:#fff1f0;border-bottom:3px solid #b3261e;' +
+    'font:12px ui-monospace,Consolas,monospace;color:#5f1512;white-space:pre-wrap">' +
+    'Script error on line ' + line + ': ' + msg + '</pre>');
   return false;
 };
 // ---------------------------------------------------------------
@@ -147,7 +133,6 @@ window.onerror = function (msg, src, line, col) {
 // there, re-run  tools/make_viewer.py  to refresh this file.
 // ---------------------------------------------------------------
 const R = {
-  build:      "v17 tw10.6 RUN",
   field:      140.41,
   robotLen:   18.0,
   robotWid:   18.0,
@@ -358,7 +343,7 @@ function dot(x, y, r, fill) { const p = px(x, y);
   cx.fillStyle = fill; cx.fill();
   cx.strokeStyle = "#2c2f36"; cx.lineWidth = 1; cx.stroke(); }
 function label(x, y, text, col) { const p = px(x, y);
-  cx.fillStyle = col; cx.font = "600 11px ui-monospace, Consolas, monospace";
+  cx.fillStyle = col; cx.font = '600 11px "Cascadia Mono", Consolas, monospace';
   cx.fillText(text, p[0], p[1]); }
 
 // ---- ui ---------------------------------------------------------
@@ -404,7 +389,6 @@ document.getElementById("scrub").oninput = e => {
 };
 
 // populate the side panels
-document.getElementById("build").textContent = R.build;
 document.getElementById("steps").innerHTML = phases.map((p, i) =>
   `<li><span class="n">${i + 1}</span><span>${p.label}</span>` +
   `<span class="d">${p.t1.toFixed(1)}s</span></li>`).join("");
@@ -423,21 +407,10 @@ const rows = [
 document.getElementById("route").innerHTML = rows.map(([k, v]) =>
   `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join("");
 
-const flags = [];
-flags.push(R.discAtWall
-  ? `<div class="flag good">Disc reaches the Toggle at this tilt.</div>`
-  : `<div class="flag bad">Disc does not reach the Toggle.</div>`);
-if (R.bumperHitsGoal) flags.push(
-  `<div class="flag bad">CLAW_REACH_IN is ${R.clawReach.toFixed(1)} in. ` +
-  `The goal base is ${R.goalBase} in across, so the bumper reaches it ` +
-  `${(R.goalBase / 2 - R.clawReach).toFixed(2)} in before the pin does &mdash; ` +
-  `it will shove the goal. Needs ${(R.goalBase / 2).toFixed(2)} in or more.</div>`);
-document.getElementById("flags").innerHTML = flags.join("");
-
 document.getElementById("foot").innerHTML =
-  `Dashed line is the drive-centre path. The heavy edge on the robot is the back &mdash; ` +
-  `lift, claw and Toggle disc. Yellow dot is the preload pin, and it disappears when the grip opens. ` +
-  `Total ${TOTAL.toFixed(1)} s against a 14.5 s limit.`;
+  `Dashed line is the path of our bot, and the outline of the different color is our back ` +
+  `with our lift, toggle disc, and claw. The yellow dot in our program that we made is our ` +
+  `preload. This is utilized for the 15 second autonomous routine.`;
 
 render();
 requestAnimationFrame(tick);
