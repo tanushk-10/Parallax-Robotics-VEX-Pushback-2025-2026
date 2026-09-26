@@ -127,7 +127,7 @@ MAX_TORQUE_PCT = 100
 
 # ---- Lift upper limit ----
 USE_MAX_LIMIT = False
-LIFT_MAX_DEG = 1000
+LIFT_MAX_DEG = 750
 
 # ---- Lift drive ----
 UP_VOLTS = 12.0
@@ -1995,13 +1995,20 @@ grab_closed = GRAB_START_CLOSED
 claw_pivot.set(pivot_up)
 claw_grab.set(grab_closed)
 
-TEST_AUTON = True
-TEST_DRIVER = True
+TEST_AUTON = False
+TEST_DRIVER = False
+TEST_BOTH = True
 
-if TEST_AUTON:
+if TEST_BOTH:
     autonomous()
+    user_control()
+
+elif TEST_AUTON:
+    autonomous()
+
 elif TEST_DRIVER:
     user_control()
+
 else:
     competition = Competition(
         user_control,
