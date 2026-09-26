@@ -127,7 +127,7 @@ MAX_TORQUE_PCT = 100
 
 # ---- Lift upper limit ----
 USE_MAX_LIMIT = False
-LIFT_MAX_DEG = 135
+LIFT_MAX_DEG = 1000
 
 # ---- Lift drive ----
 UP_VOLTS = 12.0
@@ -1818,6 +1818,8 @@ def turn_degrees(angle, speed=40, timeout_ms=None):
 
 
 def lift_to(target_deg):
+    if USE_MAX_LIMIT and target_deg > LIFT_MAX_DEG:
+        target_deg = LIFT_MAX_DEG
     # UP runs on raw volts. spin_to_position asks for a velocity and
     # the built-in loop backs off long before a 1:1 DR4B breaks free -
     # driver_control.py found the same thing. DOWN is gentle, because
